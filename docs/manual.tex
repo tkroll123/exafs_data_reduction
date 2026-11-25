@@ -1,0 +1,537 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{fancyvrb}
+\usepackage[most]{tcolorbox}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,urlcolor=blue!60!black]{hyperref}
+
+\setlist{itemsep=2pt,topsep=4pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+\setlength{\emergencystretch}{3em}
+
+\newcommand{\ui}[1]{\textsf{\textbf{#1}}}          % menu entry / button
+\newcommand{\file}[1]{\texttt{#1}}
+\newcommand{\col}[1]{\texttt{#1}}                  % data column name
+
+\newtcolorbox{note}{colback=blue!4,colframe=blue!40!black,boxrule=0.5pt,arc=2pt,
+  left=6pt,right=6pt,top=4pt,bottom=4pt,fonttitle=\bfseries,title=Note}
+\newtcolorbox{shell}{colback=gray!6,colframe=gray!50,boxrule=0.4pt,arc=2pt,
+  left=6pt,right=6pt,top=2pt,bottom=2pt}
+
+\title{\textbf{EXAFS Data Reduction}\\[4pt]
+  \large User manual}
+\date{\today}
+\author{\url{https://github.com/tkroll123/exafs_data_reduction}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent EXAFS Data Reduction is a small web application for the first steps of
+reducing X-ray absorption scans recorded with the SSRL \emph{EXAFS Data Collector}.
+It reads the raw ASCII scan files, selects and cleans the fluorescence channels,
+chooses the detector that carries the signal, calibrates the energy axis with a
+reference foil, merges repeated scans and writes text files that document every
+setting used. It runs on your own computer and is operated from a web browser.
+The processing follows the XAS\_Worker scripts by Leland B.\ Gee, with all
+hard-coded choices (columns, foil channels, thresholds) turned into settings.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%=====================================================================
+\section{Installation}
+%=====================================================================
+
+\subsection{Requirements}
+\begin{itemize}
+  \item \textbf{Python 3.9 or newer.} On macOS run \texttt{python3 --version} in Terminal; if
+        Python is missing, install it from \url{https://www.python.org/downloads/}\\ or
+        with Homebrew (\texttt{brew install python}). On Windows install Python from
+        \url{https://www.python.org/downloads/} and tick \emph{Add python.exe to PATH}.
+  \item \textbf{git} (optional, to download the code; you can also download a ZIP from GitHub).
+  \item \textbf{A web browser.} The program was developed with Google Chrome; other current browsers
+        should work as well.
+  \item \textbf{Internet access the first time a page is opened}: the plotting library
+        (Plotly) is loaded from \url{https://cdnjs.cloudflare.com}.
+\end{itemize}
+
+The Python packages used are Flask (web server), NumPy and SciPy. They are
+installed into a \emph{virtual environment}, a folder \file{.venv} inside the
+program folder, so nothing changes in your system Python.
+
+\subsection{macOS and Linux}
+\begin{shell}
+\begin{Verbatim}
+git clone https://github.com/tkroll123/exafs_data_reduction.git
+cd exafs_data_reduction
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+\end{Verbatim}
+\end{shell}
+Without git: on the GitHub page click \ui{Code} $\to$ \ui{Download ZIP}, unpack it,
+open a terminal in the unpacked folder and run the last two commands.
+
+\subsection{Windows}
+In PowerShell or the Command Prompt:
+\begin{shell}
+\begin{Verbatim}
+git clone https://github.com/tkroll123/exafs_data_reduction.git
+cd exafs_data_reduction
+py -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+\end{Verbatim}
+\end{shell}
+
+\subsection{Updating}
+\begin{shell}
+\begin{Verbatim}
+cd exafs_data_reduction
+git pull
+.venv/bin/pip install -r requirements.txt     # Windows: .venv\Scripts\pip ...
+\end{Verbatim}
+\end{shell}
+
+%=====================================================================
+\section{Starting and stopping}
+%=====================================================================
+From the program folder start the server:
+\begin{shell}
+\begin{Verbatim}
+.venv/bin/python app.py          # Windows: .venv\Scripts\python app.py
+\end{Verbatim}
+\end{shell}
+The terminal shows \texttt{Running on http://127.0.0.1:5050}. Open
+\url{http://127.0.0.1:5050} in the browser. Keep the terminal open while you
+work; stop the server with \texttt{Ctrl+C}.
+
+\begin{note}
+\begin{itemize}[leftmargin=*]
+  \item The server only accepts connections from your own computer (\texttt{127.0.0.1}).
+  \item Opened files are uploaded to the local server and kept in memory only. They are
+        forgotten when the server stops or when you reload the page; your files on disk are never
+        changed. After a restart, open the files again.
+  \item If port 5050 is already in use, change \texttt{port=5050} in the last line of
+        \file{app.py}.
+\end{itemize}
+\end{note}
+
+%=====================================================================
+\section{Overview of the window}
+%=====================================================================
+The window has a dark \textbf{menu bar on the left} with all settings and a
+\textbf{plot area on the right} with six tabs.
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Menu section & Purpose \\
+\midrule
+\ui{Open files\ldots}        & Load one or more scan files. \\
+\ui{Files}                   & List of open files: click a name to show it, tick the box to select it for
+                               merging / downloading, $\times$ closes it. \ui{$\boxtimes$ all} ticks / unticks all,
+                               \ui{clear} closes all. \\
+\ui{Channels}                & Energy, I0 and I1 columns; auto-drop threshold. \\
+\ui{Fluorescence channels}   & Which columns are fluorescence channels, which detector is used, and which channels
+                               are dropped (clickable grid). \\
+\ui{Energy calibration}      & Reference foil element, foil columns, method and its parameters. \\
+\ui{Merge checked files}     & Combine the ticked scans. \\
+\ui{Download processed data} & Save processed files. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Tab & Shows \\
+\midrule
+\ui{File info}      & Header fields, which column was assigned to which role, raw header text. \\
+\ui{Raw columns}    & Any columns against energy; optionally divided by I0, log axis, calibrated energy. \\
+\ui{Channels / I0}  & Detector table with signal-to-noise; mean of every channel / I0 as bars (click to drop);
+                      every used channel / I0 against energy. \\
+\ui{Summed ratio}   & $\Sigma$ fluorescence / I0 on the calibrated energy axis, transmission $\ln(I_0/I_1)$,
+                      statistics. \\
+\ui{Calibration}    & Foil derivative near the edge with the point used for calibration, and the foil
+                      $\mu(E)$. \\
+\ui{Merged}         & Result of the last merge, the individual scans, their differences from the merge and a
+                      table of the scans. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+All plots are interactive (Plotly): drag to zoom, double-click to reset, click a
+legend entry to hide a trace, the camera icon saves a PNG.
+
+%=====================================================================
+\section{Opening files}
+%=====================================================================
+Click \ui{Open files\ldots} and select one or several files (Shift/Cmd-click in the
+dialog). The list is sorted by name with numbers in natural order
+(\file{scan\_2} before \file{scan\_10}). Three formats are recognised automatically:
+
+\begin{description}
+  \item[SSRL EXAFS Data Collector] (e.g.\ \file{sample\_A.001}). The header is read up to the
+        line \texttt{Data:}; the following lines up to the first empty line are the column names, then
+        the numeric data. The header fields \texttt{PTS}/\texttt{COLS}, detector file, region file,
+        scan parameters and comment lines are shown under \ui{File info}. The beamline is taken from the
+        header line that starts with two digits and a word (e.g.\ \texttt{73 unfocused \ldots} $\to$ BL7-3)
+        and shown as a badge in the file list.
+  \item[Files written by this program] (\file{*\_processed.dat}, \file{*\_merged\_*.dat}). They are
+        shown as stored, marked with a purple badge; see Section~\ref{sec:reopen}.
+  \item[Generic ASCII] Any whitespace- or comma-separated numeric table. If the line above the
+        numbers has as many words as there are columns, it is used as column names, otherwise the columns
+        are called \col{col1}, \col{col2}, \ldots
+\end{description}
+Lines whose number of values does not match the number of columns are skipped and
+counted (\ui{File info} $\to$ \emph{Rows read}). If the header gives a different
+number of points than was read, a yellow warning is shown.
+
+When the first file is opened, the foil element is guessed: the lowest tabulated
+foil edge that lies at least 20\,eV above the start of the scan and below its end.
+
+%=====================================================================
+\section{Settings}
+%=====================================================================
+
+\subsection{How settings apply to several files}
+\begin{itemize}
+  \item \textbf{Column choices} (energy, I0, I1, foil numerator / denominator) start from each file's own
+        guess. Once you choose a column in the menu, that choice is used for every open file that has a
+        column of that name; files without it keep their own guess. \ui{default} (calibration section)
+        goes back to the guessed foil columns.
+  \item \textbf{Manual channel drops} are stored per file. \ui{Copy drops to all files} copies the drops
+        of the file shown to all open files; \ui{Clear drops} clears them for the file shown.
+  \item \textbf{All other settings} (threshold, detector, calibration element and method, \ldots) are
+        global and apply to every file.
+\end{itemize}
+Every change is applied immediately and the plots of the current file are updated.
+
+\subsection{Channels}
+\begin{description}
+  \item[Energy] Default \col{Achieved Energy}, else \col{Requested Energy}, \col{energy}, \col{eV}
+        or the first column.
+  \item[I0] Incident-intensity monitor, default \col{I0}.
+  \item[I1] Transmission detector, default \col{I1}; ``none'' turns off the transmission curve.
+  \item[Auto-drop] A fluorescence channel with at least this many points equal to exactly zero is
+        dropped automatically (default 5, as in XAS\_Worker; 0 switches automatic dropping off).
+\end{description}
+
+\subsection{Fluorescence channels and detector}
+\begin{description}
+  \item[Pattern] \emph{auto} takes all columns named \col{SCA\textit{m}\_\textit{n}},
+        \col{SCA\_\textit{n}} or \col{FF\textit{n}}. \emph{custom regex} lets you give a regular
+        expression, e.g.\ \verb|^SCA1_\d+$|.
+  \item[Detector] Channels are grouped by their name without the trailing number
+        (\col{SCA1\_12} $\to$ \col{SCA1}). Often only one detector carries the fluorescence signal. With
+        \emph{auto} the detector with the highest edge-jump signal-to-noise ratio (below) is used and its
+        name is shown in the drop-down; you can also choose one detector or \emph{all detectors}. With only
+        one detector the menu is inactive.
+\end{description}
+
+The \textbf{channel grid} shows each channel with a colour:
+\textcolor{green!50!black}{\textbf{green}} = used,
+\textcolor{red!70!black}{\textbf{red}} = dropped automatically,
+\textcolor{gray}{\textbf{grey, crossed out}} = dropped by you,
+dark = belongs to a detector that is not used. Click a channel (or its bar in the
+\ui{Channels / I0} tab) to drop it or take it back. Hovering shows the number of zero points.
+
+\paragraph{Detector score.} For each detector the used channels are summed and
+divided by I0, giving $y(E)$. With $E_0$ the tabulated foil energy:
+\begin{align*}
+  \text{jump}  &= \langle y\rangle_{E_0+30\ldots E_0+100\,\mathrm{eV}} - \langle y\rangle_{E_0-80\ldots E_0-15\,\mathrm{eV}},\\
+  \text{noise} &= \operatorname{std}\bigl(y_{i+1}-y_i\bigr)_{\text{pre-edge}}\big/\sqrt{2},\qquad
+  \text{S/N} = \text{jump}/\text{noise}.
+\end{align*}
+If the scan does not cover both ranges (at least 4 pre-edge and 3 post-edge points),
+the detector with the highest mean ratio is used instead.
+
+\subsection{Energy calibration}
+The energy axis is shifted so that the edge of the reference foil, measured at the
+same time as the sample, lands on its tabulated value:
+\[
+  E_\text{cal} = E_\text{raw} + \Delta, \qquad \Delta = E_\text{ref} - E_\text{found}.
+\]
+\begin{description}
+  \item[Calibrate with reference foil] Off: energies are not shifted.
+  \item[Element] Foil element, which sets $E_\text{ref}$ (Table~\ref{tab:foils}).
+  \item[Foil num.\ / denom.] Columns of the intensities before and after the foil,
+        $\mu_\text{foil} = \ln(\text{num}/\text{denom})$. Default \col{I1}/\col{I2}; for files from BL7-3
+        \col{I0}/\col{Scatter}. The note below the menus tells which default was used, or warns (yellow) when the
+        beamline default columns are missing.
+  \item[Method] see below.
+  \item[Smooth FWHM] Width (eV) of the Gaussian smoothing of $\mu$ (0 = off). Default 1.0\,eV.
+  \item[Spline step] Grid spacing (eV) on which the spline derivative is evaluated (0 = no spline).
+        Default 0.01\,eV.
+  \item[Search $\pm$ eV] The maximum of the derivative is searched within $E_\text{ref}\pm$ this value.
+        Default 10\,eV.
+\end{description}
+
+\paragraph{Method ``ln''} (default):
+\begin{enumerate}
+  \item $\mu(E)=\ln(\text{num}/\text{denom})$, sorted by energy; invalid points are removed and duplicate
+        energies averaged.
+  \item Gaussian smoothing: every point becomes the Gaussian-weighted mean of its neighbours within
+        $\pm4\sigma$, $\sigma = \text{FWHM}/2.3548$ (works on non-uniform energy grids).
+  \item A cubic spline through the smoothed $\mu$ (not-a-knot end conditions, identical to MATLAB
+        \texttt{spline}).
+  \item The spline derivative $d\mu/dE$ is evaluated every \emph{spline step} eV inside the search window;
+        its maximum is $E_\text{found}$. Without spline, finite differences on the data points are used.
+\end{enumerate}
+If the maximum lies at the border of the search window, a warning is shown: the
+element or the foil columns are probably wrong, or the window is too small.
+
+\paragraph{Method ``legacy''} reproduces XAS\_Worker exactly: $\mu = \log_{10}(r - \min r)$
+with $r=\text{num}/\text{denom}$, derivative $\mu_{i}-\mu_{i-2}$, maximum within
+$(E_\text{ref}-w,\,E_\text{ref}+w]$, no smoothing or spline.
+
+\paragraph{The Calibration tab} shows the derivative in the uncalibrated energy
+scale: grey points = raw derivative, blue points = derivative of the smoothed
+$\mu$, blue line = spline derivative. The shaded band is the search window, the
+dotted grey line the tabulated energy (target), the red dashed line and circle the
+maximum that was used. The lower plot shows the foil $\mu(E)$.
+
+\begin{table}[h]
+\centering
+\caption{Tabulated foil K-edge energies (eV). More can be added to \texttt{FOILS} in \file{xas\_core.py}.}
+\label{tab:foils}
+\begin{tabular}{@{}cccccccccc@{}}
+\toprule
+Sc & Ti & V & Cr & Mn & Fe & Co & Ni & Cu & Zn\\
+\midrule
+4492.8 & 4966.4 & 5465.1 & 5989.2 & 6539.0 & 7111.2 & 7708.9 & 8332.8 & 8978.9 & 9658.6\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%=====================================================================
+\section{Results of one scan}
+%=====================================================================
+\[
+  \text{SumRatio}(E_\text{cal}) = \frac{\sum_{c\,\in\,\text{used}} F_c}{I_0},
+  \qquad
+  \text{transmission} = \ln\frac{I_0}{I_1}.
+\]
+The \ui{Summed ratio} tab shows both curves, the calibration shift, the used and
+dropped channels, and the statistics written to the output file (mean, minimum and
+maximum of SumRatio, I0, I1; energy range; shift).
+
+%=====================================================================
+\section{Merging scans}
+%=====================================================================
+Tick the scans to combine in the file list (at least two) and click
+\ui{Merge checked}. Each scan is first processed with its own settings
+(columns, detector, drops, calibration). The scans are then combined by
+\textbf{adding counts}, as if all good channels of all scans were one large detector:
+\[
+  \text{merged}(E) = \frac{\sum_\text{scans}\sum_{c\,\in\,\text{used}} F_c(E)}{\sum_\text{scans} I_0(E)},
+  \qquad
+  \text{transmission} = \ln\frac{\sum I_0}{\sum I_1}.
+\]
+No scan is rescaled; each contributes in proportion to its counts (shown as
+``Share of counts'' in the table).
+
+\begin{description}
+  \item[Energy grid: interpolate to first scan] (default) Every scan is linearly interpolated onto the
+        calibrated energies of the first ticked scan (in file-list order). There is no extrapolation: a scan
+        only contributes inside its own energy range; the column \col{N\_scans} of the output tells how many
+        scans contributed to each point.
+  \item[Energy grid: point-by-point] Points are combined by index, the energy is the mean of the
+        calibrated energies (XAS\_Worker default). All scans must have the same number of points.
+\end{description}
+The \ui{Merged} tab keeps the result of the last merge; after changing settings,
+click \ui{Merge checked} again. \ui{Download merged} recomputes the merge with the
+current settings and saves it.
+
+Already processed or merged files (Section~\ref{sec:reopen}) can be ticked and merged
+together with raw scans.
+
+%=====================================================================
+\section{Downloading results}
+%=====================================================================
+\begin{description}
+  \item[Download current file] saves the scan shown as \file{<name>\_processed.dat}.
+  \item[Download selected (N)] saves every ticked file, one after the other, each as its own
+        \file{\_processed.dat}. N is the number of ticked files.
+  \item[Download merged] saves \file{<common prefix>\_merged\_<N>scans.dat}.
+\end{description}
+The name follows XAS\_Worker: \file{sample\_A.001} $\to$ \file{sample\_A001\_processed.dat}.
+Files are saved to the browser's download folder. If Chrome's setting \emph{Ask where
+to save each file before downloading} is on, a dialog appears for every file; the
+first time several files are downloaded, Chrome may ask to allow multiple downloads.
+
+\begin{note}
+Processed or merged files that were opened again cannot be exported again as
+\file{\_processed.dat} (they are already processed); they are reported with an
+error message and the other files are still saved.
+\end{note}
+
+\subsection{Format of a processed file}
+Plain text. Header lines start with \texttt{\#} and are grouped in sections:
+\begin{description}[font=\ttfamily]
+  \item[[source]] original file, format, collection date, beamline, detector / region files, scan
+        parameters, comments, number of points.
+  \item[[channels]] energy / I0 / I1 columns, detector mode and detector used, a line per detector with
+        channels used, edge jump, noise and S/N, then the lists of used, automatically dropped, manually
+        dropped and switched-off channels.
+  \item[[energy calibration]] element, reference energy, foil columns, method, smoothing, spline step,
+        search window, edge found and shift (or the error).
+  \item[[statistics]] mean/min/max of SumRatio, I0, I1 and the energy range.
+  \item[[data]] the column names, then the data, sorted by energy.
+\end{description}
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Column & Meaning\\
+\midrule
+\col{Energy\_cal} & calibrated energy (eV) $= E_\text{raw} + \Delta$\\
+\col{Energy\_raw} & energy as recorded (eV)\\
+\col{SumRatio}    & $\sum$ used channels / I0\\
+\col{I0}          & I0 counts\\
+\col{ln(I0/I1)}   & transmission (only if I1 is set)\\
+\bottomrule
+\end{tabular}
+\end{center}
+Example header excerpt:
+\begin{shell}
+\begin{Verbatim}[fontsize=\small]
+# EXAFS Data Reduction (Flask) - processed XAS scan
+# [source]
+# file: CoIIIoximeS1_s2_125_A.001
+# beamline: BL7-3   (73 unfocused  0.000 0 X 1.920000 20000)
+# [channels]
+# detector_used: SCA1
+# detector SCA1: used 30/30 channels, edge_jump=1.10234,
+#                noise=0.00053992, S/N=2042  <- selected
+# channels_used (30): SCA1_1 SCA1_2 ... SCA1_30
+# auto_dropped (>= 5 zero points) (0): none
+# [energy calibration]
+# calibrated: yes
+# element: Co
+# reference_energy_eV: 7708.9
+# foil: ln(I1/I2)
+# edge_found_eV: 7707.6200
+# energy_shift_eV: +1.2800   (calibrated = raw + shift)
+# [data]
+# Energy_cal   Energy_raw   SumRatio   I0   ln(I0/I1)
+\end{Verbatim}
+\end{shell}
+
+\subsection{Format of a merged file}
+The header lists the merge mode, every scan with detector, number of channels, shift,
+share of counts and dropped channels, per-scan details (comments, columns,
+calibration), and a summary of the shifts. Data columns:
+\col{Energy}, \col{SumRatio} (= \col{Sum\_counts}/\col{Sum\_I0}), \col{Sum\_counts},
+\col{Sum\_I0}, \col{N\_scans} (scans contributing to that point) and, if all scans
+have I1, \col{ln(sumI0/sumI1)}.
+
+\subsection{Opening processed files again}\label{sec:reopen}
+Files written by this program are recognised by their first line and shown as
+stored, with their settings taken from the header (\ui{File info}, \ui{Summed ratio},
+\ui{Calibration}). Menu settings do not apply to them, since the energies are already
+calibrated. They can be merged with other files; their counts are recovered exactly
+as SumRatio\,$\times$\,I0.
+
+%=====================================================================
+\section{Typical workflow}
+%=====================================================================
+\begin{enumerate}
+  \item Start the server and open all scans of one sample.
+  \item Look at \ui{File info} for the first scan: are energy, I0, I1, foil and fluorescence columns
+        correct? Change them in the menu if not.
+  \item Check the element and \ui{Calibration}: the red marker should sit on the main peak of the foil
+        derivative close to the dotted target line.
+  \item In \ui{Channels / I0} check which detector is used and inspect the channels; drop noisy or dead
+        channels by clicking. Use \ui{Copy drops to all files} if the same channels are bad in all scans.
+  \item Click through the other files and check calibration and channels for each.
+  \item Tick the good scans, \ui{Merge checked}, inspect the \ui{Merged} tab (differences should be
+        noise only), then \ui{Download merged} and/or \ui{Download selected}.
+\end{enumerate}
+
+%=====================================================================
+\section{Troubleshooting}
+%=====================================================================
+\begin{description}
+  \item[The page does not open.] Is the server still running in the terminal? Is the address
+        \url{http://127.0.0.1:5050}?
+  \item[Plots are empty, buttons do nothing.] The plotting library could not be loaded: check the internet
+        connection and reload the page.
+  \item[``Address already in use''.] Another program (or an older copy of this server) uses port 5050.
+        Stop it, or change the port in \file{app.py}.
+  \item[``unknown scan (re-open the file)''.] The server was restarted; open the files again.
+  \item[``No foil data within $\pm$\ldots''.] The chosen element's edge is not inside the scan; choose the
+        right element.
+  \item[Calibration warning ``maximum at the edge of the search window''.] Wrong element or foil columns,
+        a noisy foil, or the search window is too narrow.
+  \item[No fluorescence channels found.] The column names do not follow \col{SCA\ldots\_n} / \col{FFn};
+        use \emph{custom regex}.
+  \item[Point-by-point merge fails.] Scans have different numbers of points; use
+        \emph{interpolate to first scan}.
+\end{description}
+
+%=====================================================================
+\section{For developers}
+%=====================================================================
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+File & Contents\\
+\midrule
+\file{app.py}               & Flask server, scans kept in a dictionary in memory.\\
+\file{xas\_core.py}         & \texttt{parse\_ssrl}, \texttt{guess\_roles}, \texttt{calibrate}, \texttt{process},
+                              \texttt{merge}, \texttt{export\_text}, \texttt{export\_merged\_text}.\\
+\file{templates/index.html} & User interface (HTML, CSS, JavaScript, Plotly 2.34).\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+HTTP endpoints (all JSON unless noted):
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Method & Path & Purpose\\
+\midrule
+POST   & \texttt{/api/open}           & upload files (multipart field \texttt{files})\\
+GET    & \texttt{/api/scan/<id>}      & header, columns and data of an opened scan\\
+POST   & \texttt{/api/process/<id>}   & process with the settings in the body\\
+POST   & \texttt{/api/export}         & processed file (text download)\\
+POST   & \texttt{/api/merge}          & merge \texttt{\{items:[\{id,cfg\}], mode\}}\\
+POST   & \texttt{/api/merge/export}   & merged file (text download)\\
+DELETE & \texttt{/api/scan/<id>}      & close a scan\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The functions in \file{xas\_core.py} can also be used directly from Python, e.g.
+\begin{shell}
+\begin{Verbatim}[fontsize=\small]
+import xas_core as xc
+scan = xc.parse_ssrl(open('sample_A.001').read(), 'sample_A.001')
+r = xc.guess_roles(scan['columns'], scan['meta'].get('beamline_guess'))
+cfg = dict(energy=r['energy'], i0=r['i0'], i1=r['i1'],
+           fluor_channels=r['fluor_channels'], manual_drops=[],
+           auto_drop_threshold=5, calibrate=True, element='Co',
+           foil_num=r['foil_num'], foil_den=r['foil_den'], foil_method='ln',
+           detector='auto', smooth_fwhm=1.0, spline_step=0.01, cal_window=10)
+res = xc.process(scan, cfg)
+open('sample_A001_processed.dat', 'w').write(xc.export_text(scan, cfg, res))
+\end{Verbatim}
+\end{shell}
+
+%=====================================================================
+\section*{Acknowledgements}
+%=====================================================================
+The processing steps (automatic channel dropping, summed fluorescence ratio, foil
+calibration, merging) follow XAS\_Worker by Leland B.\ Gee (MIT License, \copyright\ 2023).
+
+\end{document}

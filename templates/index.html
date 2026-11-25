@@ -1,0 +1,728 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EXAFS Data Reduction</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.34.0/plotly.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --side: #1f2937; --side-fg: #e5e7eb; --side-muted: #9ca3af;
+    --line: #e5e7eb; --fg: #111827; --muted: #6b7280; --accent: #2563eb;
+    --kept: #16a34a; --auto: #dc2626; --manual: #9ca3af;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--fg); display: flex; height: 100vh; overflow: hidden; }
+  /* ---------- sidebar ---------- */
+  #side { width: 320px; min-width: 320px; background: var(--side); color: var(--side-fg);
+          display: flex; flex-direction: column; overflow-y: auto; }
+  #side h1 { font-size: 16px; margin: 0; padding: 16px; border-bottom: 1px solid #374151; }
+  .sec { padding: 12px 16px; border-bottom: 1px solid #374151; }
+  .sec h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--side-muted);
+            margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+  button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid #4b5563;
+           background: #374151; color: var(--side-fg); padding: 6px 10px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; width: 100%;
+                   padding: 9px; font-weight: 600; }
+  button.small { padding: 2px 7px; font-size: 12px; }
+  #files { list-style: none; margin: 0; padding: 0; }
+  #files li { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 5px;
+              cursor: pointer; font-size: 13px; word-break: break-all; }
+  #files li:hover { background: #374151; }
+  #files li.active { background: var(--accent); color: #fff; }
+  #files li .x { margin-left: auto; opacity: .6; padding: 0 4px; }
+  #files li .x:hover { opacity: 1; }
+  #files li input[type=checkbox] { margin: 0; accent-color: #22c55e; cursor: pointer; }
+  #files li .badge { font-size: 10px; background: #4b5563; border-radius: 3px; padding: 0 4px; }
+  .empty { color: var(--side-muted); font-size: 13px; }
+  label.row { display: grid; grid-template-columns: 92px 1fr; align-items: center; gap: 6px; margin: 5px 0;
+              font-size: 13px; }
+  select, input[type=number] { width: 100%; font: inherit; font-size: 13px; padding: 3px 5px; border-radius: 4px;
+              border: 1px solid #4b5563; background: #111827; color: var(--side-fg); }
+  #chgrid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; margin-top: 6px; }
+  #chgrid div { font-size: 10px; text-align: center; padding: 3px 0; border-radius: 3px; cursor: pointer;
+                user-select: none; color: #fff; }
+  #chgrid .kept { background: var(--kept); }
+  #chgrid .auto { background: var(--auto); }
+  #chgrid .off { background: #111827; color: #4b5563; }
+  #chgrid .ghead { grid-column: 1 / -1; text-align: left; background: none; color: var(--side-muted);
+                   cursor: default; font-size: 11px; padding: 4px 0 0; }
+  #chgrid .manual { background: #4b5563; color: #d1d5db; text-decoration: line-through; }
+  .legend { font-size: 11px; color: var(--side-muted); margin-top: 6px; }
+  .legend span { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 3px 0 8px; }
+  .chk { font-size: 13px; display: flex; gap: 6px; align-items: center; margin: 5px 0; }
+  .btnrow { display: flex; gap: 6px; margin-top: 8px; }
+  .btnrow button { flex: 1; font-size: 12px; }
+  /* ---------- main ---------- */
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #tabs { display: flex; gap: 2px; background: var(--panel); border-bottom: 1px solid var(--line); padding: 0 12px; }
+  #tabs button { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0;
+                 color: var(--muted); padding: 12px 14px; }
+  #tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  #content { flex: 1; overflow: auto; padding: 16px; }
+  .tab { display: none; } .tab.active { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+  .card h3 { margin: 0 0 10px; font-size: 14px; }
+  .plot { width: 100%; height: 460px; }
+  .plot.short { height: 300px; }
+  table.kv { border-collapse: collapse; font-size: 13px; }
+  table.kv td { padding: 3px 14px 3px 0; vertical-align: top; }
+  table.kv td:first-child { color: var(--muted); white-space: nowrap; }
+  pre { background: #f3f4f6; padding: 10px; border-radius: 6px; font-size: 12px; overflow: auto; max-height: 380px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 8px; font-size: 13px; }
+  .toolbar select { background: #fff; color: var(--fg); border-color: var(--line); width: auto; }
+  .toolbar select[multiple] { min-width: 180px; height: 110px; }
+  .msg { padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; }
+  .msg.err { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+  .msg.warn { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+  .msg.ok { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+  #welcome { text-align: center; color: var(--muted); margin-top: 18vh; }
+  #welcome h2 { color: var(--fg); }
+  table.det { border-collapse: collapse; font-size: 13px; margin-bottom: 4px; }
+  table.det th, table.det td { padding: 4px 12px 4px 0; text-align: left; }
+  table.det th { color: var(--muted); font-weight: 500; }
+  table.det tr.sel td { font-weight: 600; color: var(--kept); }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+  .stat { background: #f9fafb; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  .stat .k { color: var(--muted); font-size: 12px; } .stat .v { font-size: 16px; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<!-- ================= LEFT MENU BAR ================= -->
+<aside id="side">
+  <h1>EXAFS Data Reduction</h1>
+
+  <div class="sec">
+    <button class="primary" id="openBtn">Open files…</button>
+    <input type="file" id="fileInput" multiple hidden>
+  </div>
+
+  <div class="sec">
+    <h2>Files <span><button class="small" id="checkAll" title="Check / uncheck all for merging">☑ all</button>
+      <button class="small" id="closeAll" title="Close all">clear</button></span></h2>
+    <ul id="files"><li class="empty">No files open</li></ul>
+  </div>
+
+  <div class="sec">
+    <h2>Channels</h2>
+    <label class="row">Energy <select id="cfg-energy"></select></label>
+    <label class="row">I0 <select id="cfg-i0"></select></label>
+    <label class="row">I1 <select id="cfg-i1"></select></label>
+    <label class="row">Auto-drop <input type="number" id="cfg-thr" min="0" value="5"
+      title="Drop a fluorescence channel if it has at least this many zero-count points (0 = off)"></label>
+  </div>
+
+  <div class="sec">
+    <h2>Fluorescence channels <span id="chcount"></span></h2>
+    <label class="row">Pattern <select id="cfg-fluorpat">
+      <option value="auto">auto (SCAm_n / FFn)</option>
+      <option value="custom">custom regex…</option>
+    </select></label>
+    <label class="row" id="customRow" hidden>Regex <input type="text" id="cfg-regex"
+      style="width:100%;font-size:13px;padding:3px 5px;border-radius:4px;border:1px solid #4b5563;background:#111827;color:#e5e7eb"
+      value="^SCA1_\d+$"></label>
+    <label class="row" title="Only one detector carries the signal. auto = highest edge-jump signal-to-noise of Σ channels / I0">Detector
+      <select id="cfg-det"><option value="auto">auto (best S/N)</option></select></label>
+    <div id="chgrid"></div>
+    <div class="legend"><span style="background:var(--kept)"></span>used<span style="background:var(--auto)"></span>auto-dropped<span style="background:#4b5563"></span>manual drop<span style="background:#111827;border:1px solid #4b5563"></span>other detector (off)</div>
+    <div class="legend">Click a channel to toggle a manual drop for this file.</div>
+    <div class="btnrow">
+      <button id="dropsAll">Copy drops to all files</button>
+      <button id="dropsClear">Clear drops</button>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h2>Energy calibration (foil)</h2>
+    <label class="chk"><input type="checkbox" id="cfg-cal" checked> Calibrate with reference foil</label>
+    <label class="row">Element <select id="cfg-el">
+      {% for el, e in foils.items() %}<option value="{{el}}">{{el}} ({{e}} eV)</option>{% endfor %}
+    </select></label>
+    <label class="row">Foil num. <select id="cfg-fnum"></select></label>
+    <label class="row">Foil denom. <select id="cfg-fden"></select></label>
+    <div class="legend" style="display:flex;justify-content:space-between;gap:6px;align-items:center">
+      <span id="foilNote"></span><button class="small" id="foilReset" title="Use the beamline default for each file">default</button></div>
+    <label class="row">Method <select id="cfg-fmeth">
+      <option value="ln">ln(num/denom), dμ/dE</option>
+      <option value="legacy">XAS_Worker legacy: log10(num/denom − min)</option>
+    </select></label>
+    <label class="row" title="Gaussian smoothing of μ before differentiating (FWHM in eV, 0 = off)">Smooth FWHM
+      <input type="number" id="cfg-smooth" min="0" step="0.1" value="1.0"></label>
+    <label class="row" title="Cubic spline (MATLAB spline, not-a-knot) through the smoothed μ; derivative evaluated on this grid (eV, 0 = off)">Spline step
+      <input type="number" id="cfg-spline" min="0" step="0.005" value="0.01"></label>
+    <label class="row" title="The derivative maximum is searched within reference ± this many eV">Search ± eV
+      <input type="number" id="cfg-win" min="1" step="1" value="10"></label>
+    <div class="legend" id="legacyNote" hidden>Smoothing / spline are not used by the legacy method.</div>
+  </div>
+  <div class="sec">
+    <h2>Merge checked files</h2>
+    <label class="row" title="How the scans are put on a common energy axis">Energy grid
+      <select id="mergeMode">
+        <option value="first">interpolate to first scan</option>
+        <option value="pointwise">point-by-point (XAS_Worker default)</option>
+      </select></label>
+    <div class="btnrow">
+      <button id="mergeBtn">Merge checked (0)</button>
+      <button id="mergeDl">Download merged</button>
+    </div>
+    <div class="legend">Each checked scan is processed with its own settings (channels, detector, drops, calibration). Channels are then added: merged = Σ<sub>scans</sub> Σ<sub>channels</sub> counts ÷ Σ<sub>scans</sub> I0 (no scaling). Results in the “Merged” tab.</div>
+  </div>
+
+  <div class="sec">
+    <h2>Download processed data</h2>
+    <div class="btnrow">
+      <button id="saveOne">Download current file</button>
+      <button id="saveAll">Download selected (0)</button>
+    </div>
+    <div class="legend">One <code>&lt;name&gt;_processed.dat</code> per scan, with a header listing channels, detector, calibration and source file. “Download selected” saves every checked file (checkbox in the file list), one by one. Chrome asks where to save each one if “Ask where to save each file” is on (the first time it may also ask to allow multiple downloads).</div>
+  </div>
+</aside>
+
+<!-- ================= MAIN ================= -->
+<main id="main">
+  <nav id="tabs">
+    <button data-tab="info" class="active">File info</button>
+    <button data-tab="raw">Raw columns</button>
+    <button data-tab="chan">Channels / I0</button>
+    <button data-tab="sum">Summed ratio</button>
+    <button data-tab="cal">Calibration</button>
+    <button data-tab="merge">Merged</button>
+  </nav>
+  <div id="content">
+    <div id="msgs"></div>
+    <div id="welcome">
+      <h2>No file selected</h2>
+      <p>Click <b>Open files…</b> in the left menu to load SSRL ASCII scan files (e.g. <code>*.001</code>).</p>
+    </div>
+
+    <section class="tab active" id="tab-info">
+      <div id="kindNote"></div>
+      <div class="card"><h3>Header</h3><table class="kv" id="metaTable"></table></div>
+      <div class="card"><h3>Columns <span id="colcount" style="color:var(--muted);font-weight:400"></span></h3>
+        <table class="kv" id="roleTable"></table></div>
+      <div class="card"><h3>Raw header text</h3><pre id="rawHeader"></pre></div>
+    </section>
+
+    <section class="tab" id="tab-raw">
+      <div class="card">
+        <div class="toolbar">
+          <label>Y columns<br><select id="rawY" multiple></select></label>
+          <div>
+            <label class="chk"><input type="checkbox" id="rawDivI0"> divide by I0</label>
+            <label class="chk"><input type="checkbox" id="rawLog"> log y-axis</label>
+            <label class="chk"><input type="checkbox" id="rawCal"> calibrated energy</label>
+          </div>
+        </div>
+        <div id="plotRaw" class="plot"></div>
+      </div>
+    </section>
+
+    <section class="tab" id="tab-chan">
+      <div class="card" id="detCard"><h3>Detectors</h3><div id="detTable"></div></div>
+      <div class="card">
+        <h3>Mean fluorescence / I0 per channel <span style="color:var(--muted);font-weight:400">(click a bar to toggle a drop)</span></h3>
+        <div id="plotBars" class="plot short"></div>
+      </div>
+      <div class="card">
+        <div class="toolbar">
+          <label class="chk"><input type="checkbox" id="chNorm" checked> normalize each channel (divide by mean)</label>
+          <label class="chk"><input type="checkbox" id="chShowDropped"> show dropped channels</label>
+        </div>
+        <div id="plotChan" class="plot"></div>
+      </div>
+    </section>
+
+    <section class="tab" id="tab-sum">
+      <div class="card"><h3>Summed fluorescence / I0 (calibrated energy)</h3>
+        <div id="sumInfo"></div><div id="plotSum" class="plot"></div></div>
+      <div class="card"><h3>Transmission ln(I0/I1)</h3><div id="plotTrans" class="plot short"></div></div>
+      <div class="card"><h3>Statistics (as in XAS_Worker output_log.json)</h3><div class="stat-grid" id="statGrid"></div></div>
+    </section>
+
+    <section class="tab" id="tab-cal">
+      <div id="calInfo"></div>
+      <div class="card"><h3>Foil derivative near edge (uncalibrated energy)</h3><div id="plotCalD" class="plot"></div></div>
+      <div class="card"><h3>Foil μ(E)</h3><div id="plotCalMu" class="plot short"></div></div>
+    </section>
+
+    <section class="tab" id="tab-merge">
+      <div id="mergeInfo"><div class="msg warn">Check two or more files in the left menu and click “Merge checked”.</div></div>
+      <div class="card"><h3>Individual scans (Σ/I0) and merged result (channels added), calibrated energy</h3>
+        <div id="plotMerge" class="plot"></div></div>
+      <div class="card"><h3>Difference of each scan from the merged result</h3><div id="plotMergeDiff" class="plot short"></div></div>
+      <div class="card"><h3>Scans merged</h3><div id="mergeTable"></div></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = { scans: [], current: null, cache: {}, drops: {}, result: null, tab: 'info', checked: new Set(), merged: null };
+const PLOT_CFG = { responsive: true, displaylogo: false };
+const LAYOUT = { margin: { l: 60, r: 20, t: 10, b: 45 }, xaxis: { title: 'Energy (eV)' },
+                 legend: { font: { size: 10 } }, hovermode: 'x unified' };
+
+function msg(text, kind = 'err') {
+  const d = document.createElement('div'); d.className = 'msg ' + kind; d.textContent = text;
+  $('msgs').appendChild(d); setTimeout(() => d.remove(), 9000);
+}
+
+/* ---------------- open files ---------------- */
+$('openBtn').onclick = () => $('fileInput').click();
+$('fileInput').onchange = async e => {
+  const fd = new FormData();
+  for (const f of e.target.files) fd.append('files', f);
+  e.target.value = '';
+  const r = await fetch('/api/open', { method: 'POST', body: fd }).then(r => r.json());
+  r.errors.forEach(x => msg(`${x.filename}: ${x.error}`));
+  r.scans.forEach(s => { state.scans.push(s); state.drops[s.id] = new Set(); });
+  state.scans.sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true }));
+  renderFiles();
+  if (r.scans.length) {
+    const first = state.scans.find(s => r.scans.includes(s));
+    const isFirstLoad = !state.current;
+    if (isFirstLoad) initConfig(first);
+    await select(first.id, isFirstLoad);
+  }
+};
+$('closeAll').onclick = async () => {
+  for (const s of state.scans) fetch('/api/scan/' + s.id, { method: 'DELETE' });
+  Object.assign(state, { scans: [], current: null, cache: {}, drops: {}, result: null, merged: null });
+  state.checked.clear();
+  renderFiles(); showWelcome(true);
+};
+
+function renderFiles() {
+  updateMergeBtn();
+  const ul = $('files'); ul.innerHTML = '';
+  if (!state.scans.length) { ul.innerHTML = '<li class="empty">No files open</li>'; return; }
+  for (const s of state.scans) {
+    const li = document.createElement('li');
+    li.className = s.id === state.current ? 'active' : '';
+    const bl = (s.meta.beamline_guess ? `<span class="badge">BL${s.meta.beamline_guess}</span>` : '') +
+               (s.meta.kind ? `<span class="badge" style="background:#7c3aed">${s.meta.kind}</span>` : '');
+    li.innerHTML = `<input type="checkbox" title="include in merge" ${state.checked.has(s.id) ? 'checked' : ''}>` +
+                   `<span>${s.filename}</span>${bl}<span class="x" title="close">×</span>`;
+    li.onclick = ev => {
+      if (ev.target.type === 'checkbox') {
+        ev.target.checked ? state.checked.add(s.id) : state.checked.delete(s.id);
+        updateMergeBtn(); return;
+      }
+      if (ev.target.classList.contains('x')) {
+        fetch('/api/scan/' + s.id, { method: 'DELETE' });
+        state.checked.delete(s.id);
+        state.scans = state.scans.filter(x => x.id !== s.id);
+        if (state.current === s.id) { state.current = null; state.scans[0] ? select(state.scans[0].id) : showWelcome(true); }
+        renderFiles(); return;
+      }
+      select(s.id);
+    };
+    ul.appendChild(li);
+  }
+}
+
+function showWelcome(on) {
+  $('welcome').style.display = on ? 'block' : 'none';
+  document.querySelectorAll('.tab').forEach(t => t.style.visibility = on ? 'hidden' : 'visible');
+}
+showWelcome(true);
+
+/* ---------------- configuration ---------------- */
+const SELECTS = { energy: 'cfg-energy', i0: 'cfg-i0', i1: 'cfg-i1', foil_num: 'cfg-fnum', foil_den: 'cfg-fden' };
+
+function fillSelect(id, cols, value, allowNone) {
+  const el = $(id); el.innerHTML = (allowNone ? '<option value="">— none —</option>' : '') +
+    cols.map(c => `<option value="${c}">${c}</option>`).join('');
+  el.value = cols.includes(value) ? value : (allowNone ? '' : cols[0]);
+}
+
+// Column roles: the file's own guess (beamline-aware) unless the user picked a column
+// in the menu; a user pick is used for every file that has that column.
+state.userSet = {};
+const NULLABLE = r => r !== 'energy' && r !== 'i0';
+function resolveRole(scan, role) {
+  const u = state.userSet[role];
+  if (u !== undefined && (u === '' ? NULLABLE(role) : scan.columns.includes(u))) return u;
+  return scan.roles[role];
+}
+function initConfig(scan) { syncConfigTo(scan); }
+function syncConfigTo(scan) {
+  for (const [role, id] of Object.entries(SELECTS))
+    fillSelect(id, scan.columns, resolveRole(scan, role), NULLABLE(role));
+  const note = $('foilNote');
+  const user = state.userSet.foil_num !== undefined || state.userSet.foil_den !== undefined;
+  note.textContent = user ? 'foil channels set by you' : scan.roles.foil_note;
+  note.style.color = /but no/.test(note.textContent) && !user ? '#fbbf24' : '';
+}
+for (const [role, id] of Object.entries(SELECTS))
+  $(id).addEventListener('change', () => {
+    state.userSet[role] = $(id).value;
+    const scan = state.scans.find(s => s.id === state.current); if (scan) syncConfigTo(scan);
+  });
+$('foilReset').onclick = () => {
+  delete state.userSet.foil_num; delete state.userSet.foil_den;
+  const scan = state.scans.find(s => s.id === state.current); if (scan) { syncConfigTo(scan); run(); }
+};
+
+function fluorChannels(scan) {
+  if ($('cfg-fluorpat').value === 'custom') {
+    let re; try { re = new RegExp($('cfg-regex').value); } catch { msg('Invalid regex'); return []; }
+    return scan.columns.filter(c => re.test(c));
+  }
+  return scan.roles.fluor_channels;
+}
+
+function config(id = state.current) {
+  const scan = state.scans.find(s => s.id === id);
+  return {
+    energy: resolveRole(scan, 'energy'), i0: resolveRole(scan, 'i0'), i1: resolveRole(scan, 'i1') || null,
+    fluor_channels: fluorChannels(scan), manual_drops: [...state.drops[id]],
+    auto_drop_threshold: +$('cfg-thr').value, calibrate: $('cfg-cal').checked,
+    element: $('cfg-el').value, foil_num: resolveRole(scan, 'foil_num') || null, foil_den: resolveRole(scan, 'foil_den') || null,
+    foil_method: $('cfg-fmeth').value,
+    detector: $('cfg-det').value,
+    smooth_fwhm: +$('cfg-smooth').value, spline_step: +$('cfg-spline').value, cal_window: +$('cfg-win').value,
+  };
+}
+
+['cfg-energy', 'cfg-i0', 'cfg-i1', 'cfg-thr', 'cfg-cal', 'cfg-el', 'cfg-fnum', 'cfg-fden', 'cfg-fmeth', 'cfg-regex', 'cfg-smooth', 'cfg-spline', 'cfg-win', 'cfg-det']
+  .forEach(id => $(id).addEventListener('change', run));
+$('cfg-fmeth').addEventListener('change', () => {
+  const leg = $('cfg-fmeth').value === 'legacy';
+  ['cfg-smooth', 'cfg-spline'].forEach(id => $(id).disabled = leg);
+  $('legacyNote').hidden = !leg;
+});
+$('cfg-fluorpat').onchange = () => { $('customRow').hidden = $('cfg-fluorpat').value !== 'custom'; run(); };
+$('dropsAll').onclick = () => {
+  const d = state.drops[state.current]; if (!d) return;
+  for (const s of state.scans) state.drops[s.id] = new Set(d);
+  msg(`Copied ${d.size} manual drop(s) to all ${state.scans.length} files.`, 'ok');
+};
+$('dropsClear').onclick = () => { if (state.current) { state.drops[state.current].clear(); run(); } };
+
+function toggleDrop(ch) {
+  const d = state.drops[state.current]; d.has(ch) ? d.delete(ch) : d.add(ch); run();
+}
+
+/* ---------------- saving ---------------- */
+async function download(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) {
+    const res = await r.json().catch(() => ({ errors: [{ error: 'export failed' }] }));
+    res.errors.forEach(e => msg(`${e.file || e.id || ''}: ${e.error}`)); return;
+  }
+  const cd = r.headers.get('Content-Disposition') || '';
+  const fname = (cd.match(/filename="([^"]+)"/) || [])[1] || 'processed.dat';
+  const href = URL.createObjectURL(await r.blob());
+  const a = document.createElement('a'); a.href = href; a.download = fname;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 10000);
+}
+async function save(ids) {
+  if (!ids.length) { msg('No files open.', 'warn'); return; }
+  await download('/api/export', { items: ids.map(id => ({ id, cfg: config(id) })) });
+}
+
+/* ---------------- merging ---------------- */
+const checkedIds = () => state.scans.filter(s => state.checked.has(s.id)).map(s => s.id);   // file-list order
+function updateMergeBtn() {
+  $('mergeBtn').textContent = `Merge checked (${state.checked.size})`;
+  $('saveAll').textContent = `Download selected (${state.checked.size})`;
+}
+$('checkAll').onclick = () => {
+  if (state.checked.size === state.scans.length) state.checked.clear();
+  else state.scans.forEach(s => state.checked.add(s.id));
+  renderFiles();
+};
+function mergeBody() {
+  return { mode: $('mergeMode').value, items: checkedIds().map(id => ({ id, cfg: config(id) })) };
+}
+$('mergeBtn').onclick = async () => {
+  if (state.checked.size < 2) { msg('Check at least two files to merge.', 'warn'); return; }
+  const r = await fetch('/api/merge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mergeBody()) });
+  const res = await r.json();
+  if (!r.ok) { msg(res.error); return; }
+  state.merged = { ...res, at: new Date().toLocaleTimeString() };
+  document.querySelector('#tabs button[data-tab="merge"]').click();
+};
+$('mergeDl').onclick = () => {
+  if (state.checked.size < 2) { msg('Check at least two files to merge.', 'warn'); return; }
+  download('/api/merge/export', mergeBody());
+};
+
+function plotMerged() {
+  const m = state.merged;
+  if (!m) return;
+  const shifts = m.scans.map(s => s.shift);
+  $('mergeInfo').innerHTML = `<div class="msg ok"><b>${m.n_scans}</b> scans merged by adding channels (Σ counts ÷ Σ I0, no scaling; ${m.mode === 'first' ? 'interpolated to the energy grid of the first scan' : 'point-by-point'}), at ${m.at} with the settings at that time. ` +
+    `Calibration shifts ${Math.min(...shifts).toFixed(3)} … ${Math.max(...shifts).toFixed(3)} eV. Re-click “Merge checked” after changing settings.</div>` +
+    (m.scans.some(s => !s.calibrated) ? '<div class="msg warn">Some scans are not calibrated (see table).</div>' : '');
+  const E = m.energy, tr = [];
+  m.scans.forEach(s => tr.push({ x: E, y: s.sumratio, mode: 'lines', name: s.file, line: { width: 1 }, opacity: 0.7 }));
+  tr.push({ x: E, y: m.sumratio, mode: 'lines', name: 'MERGED', line: { width: 2.5, color: '#111827' } });
+  Plotly.react('plotMerge', tr, { ...LAYOUT, hovermode: 'closest', yaxis: { title: 'Σ counts / I0' } }, PLOT_CFG);
+  Plotly.react('plotMergeDiff', m.scans.map(s => ({ x: E, mode: 'lines', name: s.file, line: { width: 1 },
+    y: s.sumratio.map((v, i) => v == null || m.sumratio[i] == null ? null : v - m.sumratio[i]) })),
+    { ...LAYOUT, hovermode: 'closest', yaxis: { title: 'scan − average' } }, PLOT_CFG);
+  $('mergeTable').innerHTML = `<table class="det"><tr><th>#</th><th>File</th><th>Detector</th><th>Channels</th><th>Dropped</th><th>Shift (eV)</th><th>Share of counts</th></tr>` +
+    m.scans.map((s, i) => `<tr><td>${i + 1}</td><td>${s.file}</td><td>${s.detector}</td><td>${s.n_channels}</td>
+      <td>${s.dropped.join(' ') || '—'}</td><td>${s.calibrated ? s.shift.toFixed(3) : '<span style="color:#dc2626">not calibrated</span>'}</td>
+      <td>${s.count_fraction == null ? '—' : (100 * s.count_fraction).toFixed(1) + ' %'}</td></tr>`).join('') + '</table>';
+}
+$('saveOne').onclick = () => save(state.current ? [state.current] : []);
+$('saveAll').onclick = async () => {
+  const ids = checkedIds();
+  if (!ids.length) { msg('No files selected - check files in the file list first.', 'warn'); return; }
+  for (const id of ids) {                 // one download (and one save dialog) per checked scan
+    await save([id]);
+    await new Promise(r => setTimeout(r, 600));
+  }
+};
+
+/* ---------------- selection & processing ---------------- */
+async function select(id, guessElement = false) {
+  state.current = id; renderFiles(); showWelcome(false);
+  const scan = state.scans.find(s => s.id === id);
+  syncConfigTo(scan);
+  if (!state.cache[id]) state.cache[id] = await fetch('/api/scan/' + id).then(r => r.json());
+  renderInfo(state.cache[id]);
+  fillRawY(state.cache[id]);
+  if (guessElement) guessFoilElement(state.cache[id]);
+  run();
+}
+
+async function run() {
+  if (!state.current) return;
+  const r = await fetch('/api/process/' + state.current, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config())
+  });
+  const res = await r.json();
+  if (!r.ok) { msg(res.error); return; }
+  state.result = res;
+  renderGrid(res); renderTab();
+}
+
+// pick the lowest tabulated foil edge lying inside the scanned energy range
+function guessFoilElement(d) {
+  const e = d.data[$('cfg-energy').value]; if (!e) return;
+  const lo = Math.min(...e), hi = Math.max(...e);
+  const opts = [...$('cfg-el').options].map(o => [o.value, parseFloat(o.textContent.match(/\(([\d.]+)/)[1])])
+    .filter(([, E]) => E >= lo + 20 && E <= hi).sort((a, b) => a[1] - b[1]);
+  if (opts.length) $('cfg-el').value = opts[0][0];
+}
+
+/* ---------------- rendering ---------------- */
+function renderInfo(d) {
+  const m = d.meta;
+  const rows = [['File', m.filename], ['Format', m.format], ['Collector', m.collector], ['Date', m.date],
+    ['Points / columns', m.pts != null ? `${m.pts} / ${m.cols}` : ''], ['Rows read', m.rows_read + (m.rows_skipped ? ` (${m.rows_skipped} skipped)` : '')],
+    ['Beamline', m.beamline_guess ? 'BL' + m.beamline_guess + '   (' + m.beamline_line + ')' : m.beamline_line],
+    ['Detector file', m.detector_file], ['Region file', m.region_file], ['Scan parameters', m.scan_params], ['Comments', (m.comments || []).join('\n')]];
+  $('metaTable').innerHTML = rows.filter(r => r[1]).map(([k, v]) =>
+    `<tr><td>${k}</td><td style="white-space:pre-wrap">${v}</td></tr>`).join('');
+  if (m.warning) msg(m.warning, 'warn');
+  $('kindNote').innerHTML = m.kind ? `<div class="msg warn">This is a <b>${m.kind}</b> file written by this app. It is shown as stored: the channel, detector and calibration settings in the left menu do not apply to it. Check it in the file list to merge it with other files.</div>` : '';
+  const R = d.roles;
+  const others = d.columns.filter(c => ![R.energy, R.i0, R.i1, R.foil_num, R.foil_den].includes(c)
+    && !R.fluor_channels.includes(c) && !R.icr_channels.includes(c));
+  const fl = R.fluor_channels;
+  $('colcount').textContent = `(${d.columns.length})`;
+  $('roleTable').innerHTML = [
+    ['Energy', R.energy], ['I0', R.i0], ['I1', R.i1],
+    ['Foil (reference)', `${R.foil_num ?? '—'} / ${R.foil_den ?? '—'}   (${R.foil_note})`],
+    ['Fluorescence', fl.length ? `${fl.length} channels: ${fl[0]} … ${fl[fl.length - 1]}` : 'none found'],
+    ['ICR', R.icr_channels.length ? `${R.icr_channels.length} channels` : 'none'],
+    ['Other', others.join(', ')]].map(([k, v]) => `<tr><td>${k}</td><td>${v ?? '—'}</td></tr>`).join('');
+  $('rawHeader').textContent = d.header.join('\n');
+}
+
+function fillRawY(d) {
+  const sel = $('rawY'), prev = [...sel.selectedOptions].map(o => o.value);
+  sel.innerHTML = d.columns.map(c => `<option value="${c}">${c}</option>`).join('');
+  const want = prev.filter(c => d.columns.includes(c));
+  (want.length ? want : [d.roles.i0, d.roles.i1, d.roles.foil_den].filter(Boolean))
+    .forEach(c => { const o = [...sel.options].find(o => o.value === c); if (o) o.selected = true; });
+}
+['rawY', 'rawDivI0', 'rawLog', 'rawCal', 'chNorm', 'chShowDropped'].forEach(id => $(id).addEventListener('change', renderTab));
+
+function renderGrid(res) {
+  const g = $('chgrid'); g.innerHTML = '';
+  if (res.processed) {
+    const P = res.processed;
+    $('chcount').textContent = 'from file';
+    g.innerHTML = `<div class="ghead">${P.kind === 'merged' ? `merged file (${P.n_inputs || '?'} inputs)` : `${res.kept.length} channels used (${P.detector})`} — settings fixed in file</div>`;
+    $('cfg-det').innerHTML = '<option>from file</option>'; $('cfg-det').disabled = true;
+    $('detTable').innerHTML = `<div style="color:var(--muted)">Detector and channel selection were done when this file was processed: ` +
+      `${P.detector}${res.kept.length ? ', channels ' + res.kept.join(' ') : ''}.</div>`;
+    return;
+  }
+  const chs = Object.entries(res.channels);
+  $('chcount').textContent = `${res.kept.length}/${chs.length} used`;
+  const multi = res.detectors.length > 1;
+  let lastDet = null;
+  for (const [c, info] of chs) {
+    if (multi && info.detector !== lastDet) {
+      const d = res.detectors.find(x => x.name === info.detector);
+      const h = document.createElement('div'); h.className = 'ghead';
+      h.textContent = `${info.detector} — ${d.selected ? 'in use' : 'off'}`;
+      g.appendChild(h); lastDet = info.detector;
+    }
+    const d = document.createElement('div');
+    d.className = info.status; d.textContent = c;
+    d.title = `${c}: ${info.zeros} zero points` + ({ auto: ' (auto-dropped)', off: ' (detector not selected)', manual: ' (manual drop)' }[info.status] || '');
+    if (info.status !== 'off') d.onclick = () => toggleDrop(c);
+    g.appendChild(d);
+  }
+  // detector dropdown: keep the user's choice if it still exists
+  const sel = $('cfg-det'), cur = sel.value;
+  const autoPick = res.detector_mode === 'auto' ? res.detectors.find(d => d.selected) : null;
+  sel.innerHTML = `<option value="auto">auto (best S/N)${autoPick && multi ? ' → ' + autoPick.name : ''}</option>` +
+    (multi ? res.detectors.map(d => `<option value="${d.name}">${d.name} only</option>`).join('') + '<option value="all">all detectors</option>' : '');
+  sel.value = [...sel.options].some(o => o.value === cur) ? cur : 'auto';
+  sel.disabled = !multi;
+  renderDetTable(res);
+}
+
+function renderDetTable(res) {
+  const f = (v, n = 3) => v == null ? '—' : (+v.toPrecision(n)).toString();
+  $('detTable').innerHTML = `<table class="det"><tr><th>Detector</th><th>Channels used</th><th>Mean Σ/I0</th>
+    <th>Edge jump</th><th>Pre-edge noise</th><th>S/N</th><th></th></tr>` +
+    res.detectors.map(d => `<tr class="${d.selected ? 'sel' : ''}"><td>${d.name}</td><td>${d.n_kept}/${d.n_channels}</td>
+      <td>${f(d.mean_ratio)}</td><td>${f(d.jump)}</td><td>${f(d.noise)}</td><td>${f(d.snr)}</td>
+      <td>${d.selected ? '✓ in use' : 'off'}</td></tr>`).join('') + '</table>' +
+    `<div style="color:var(--muted);font-size:12px">S/N = edge jump (mean of E₀+30…+100 eV minus mean of E₀−80…−15 eV, E₀ = foil energy) ÷ point-to-point pre-edge noise of Σ channels / I0. ` +
+    `Change with “Detector” in the left menu.</div>`;
+}
+
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('active', x === b));
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + b.dataset.tab));
+  state.tab = b.dataset.tab; renderTab();
+});
+
+function renderTab() {
+  if (state.tab === 'merge') { plotMerged(); return; }
+  const res = state.result, d = state.cache[state.current];
+  if (!res || !d) return;
+  ({ raw: plotRaw, chan: plotChan, sum: plotSum, cal: plotCal }[state.tab] || (() => {}))(res, d);
+}
+
+const COLOR = { kept: null, auto: '#dc2626', manual: '#9ca3af', off: '#d1d5db' };
+
+function plotRaw(res, d) {
+  const x = $('rawCal').checked ? res.energy : res.energy_raw;
+  const i0 = d.data[$('cfg-i0').value];
+  const traces = [...$('rawY').selectedOptions].map(o => ({
+    x, name: o.value, mode: 'lines',
+    y: $('rawDivI0').checked ? d.data[o.value].map((v, k) => v / i0[k]) : d.data[o.value],
+  }));
+  Plotly.react('plotRaw', traces, { ...LAYOUT, yaxis: { type: $('rawLog').checked ? 'log' : 'linear' } }, PLOT_CFG);
+}
+
+function mean(a) { const f = a.filter(v => v != null); return f.reduce((s, v) => s + v, 0) / (f.length || 1); }
+
+function plotChan(res) {
+  const chs = Object.entries(res.channels);
+  Plotly.react('plotBars', [{
+    type: 'bar', x: chs.map(([, i]) => i.name), y: chs.map(([, i]) => mean(i.ratio)),
+    marker: { color: chs.map(([, i]) => ({ kept: '#16a34a', auto: '#dc2626', manual: '#9ca3af', off: '#e5e7eb' }[i.status])) },
+    customdata: chs.map(([c]) => c), hovertemplate: '%{x}: %{y:.4g}<extra></extra>',
+  }], { margin: { l: 60, r: 10, t: 10, b: 50 }, yaxis: { title: 'mean ratio' } }, PLOT_CFG);
+  $('plotBars').removeAllListeners?.('plotly_click');
+  $('plotBars').on('plotly_click', ev => { const c = ev.points[0].customdata; if (res.channels[c].status !== 'off') toggleDrop(c); });
+
+  const norm = $('chNorm').checked, showD = $('chShowDropped').checked;
+  const traces = chs.filter(([, i]) => showD || i.status === 'kept').map(([, i]) => {
+    const m = norm ? mean(i.ratio) : 1;
+    return { x: res.energy, y: i.ratio.map(v => v == null ? null : v / m), name: i.name, mode: 'lines',
+             line: { width: 1, dash: i.status === 'kept' ? 'solid' : 'dot', color: COLOR[i.status] || undefined } };
+  });
+  Plotly.react('plotChan', traces, { ...LAYOUT, hovermode: 'closest',
+    yaxis: { title: norm ? 'ratio / mean' : 'channel / I0' } }, PLOT_CFG);
+}
+
+function plotSum(res) {
+  const sh = res.calibration?.ok ? `Energy shifted by ${res.shift.toFixed(3)} eV. ` : 'Not calibrated. ';
+  $('sumInfo').innerHTML = `<div class="msg ok">${sh}${res.kept.length} channels summed (detector: ${res.detectors.filter(d => d.selected).map(d => d.name).join(' + ') || '—'}). Dropped: ` +
+    `${[...res.auto_dropped.map(c => c + ' (auto)'), ...res.manual_dropped].join(', ') || 'none'}</div>`;
+  Plotly.react('plotSum', [{ x: res.energy, y: res.sumratio, mode: 'lines', name: 'SumRatio' }],
+    { ...LAYOUT, yaxis: { title: 'Σ FF / I0' } }, PLOT_CFG);
+  if (res.transmission)
+    Plotly.react('plotTrans', [{ x: res.energy, y: res.transmission, mode: 'lines', name: 'ln(I0/I1)' }],
+      { ...LAYOUT, yaxis: { title: 'ln(I0/I1)' } }, PLOT_CFG);
+  else Plotly.purge('plotTrans');
+  const s = res.stats, f = v => v == null ? '—' : Math.abs(v) >= 1e4 ? v.toExponential(3) : (+v.toPrecision(5)).toString();
+  const items = [['calibration shift (eV)', s.calibration_shift], ['energy min', s.energy_min], ['energy max', s.energy_max]];
+  for (const k of ['sumratio', 'i0', 'i1']) if (s[k]) for (const q of ['mean', 'min', 'max']) items.push([`${k} ${q}`, s[k][q]]);
+  $('statGrid').innerHTML = items.map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${f(v)}</div></div>`).join('');
+}
+
+function plotCal(res) {
+  const c = res.calibration;
+  if (res.processed) {
+    const P = res.processed;
+    $('calInfo').innerHTML = `<div class="msg ${P.calibrated ? 'ok' : 'warn'}">Calibration was done when this file was written` +
+      (P.kind === 'merged' ? ` (mean shift of the inputs ${P.shift >= 0 ? '+' : ''}${P.shift.toFixed(3)} eV; see the header).`
+        : P.calibrated ? `: ${P.element} reference ${P.reference} eV, edge found at ${P.edge_found} eV, shift ${P.shift >= 0 ? '+' : ''}${P.shift.toFixed(4)} eV (method ${P.method}).`
+        : ': not calibrated.') + ' The energies in this file are already calibrated.</div>';
+    Plotly.purge('plotCalD'); Plotly.purge('plotCalMu'); return;
+  }
+  if (!c) { $('calInfo').innerHTML = '<div class="msg warn">Calibration is off or foil channels are not set.</div>';
+            Plotly.purge('plotCalD'); Plotly.purge('plotCalMu'); return; }
+  const W = c.window, how = c.method === 'legacy' ? 'legacy XAS_Worker method (no smoothing / spline)'
+    : `Gaussian smoothing FWHM ${$('cfg-smooth').value} eV` + (c.spline_energy ? `, cubic spline, derivative every ${$('cfg-spline').value} eV` : ', no spline');
+  $('calInfo').innerHTML = (c.ok
+    ? `<div class="msg ok">Reference ${$('cfg-el').value} edge ${c.ref} eV · edge found at <b>${c.found.toFixed(3)} eV</b> · data shifted by <b>${c.shift.toFixed(3)} eV</b> (= reference − found).<br>` +
+      `The red dashed line / circle is the point used: the maximum of the ${c.spline_energy ? 'spline ' : ''}derivative inside the shaded ±${W} eV window (${how}). The grey dotted line is the tabulated foil energy the data are shifted to.</div>`
+    : `<div class="msg err">${c.error}</div>`) + (c.warning ? `<div class="msg warn">${c.warning}</div>` : '');
+
+  const lo = c.ref - 1.5 * W, hi = c.ref + 1.5 * W;
+  const clip = (xs, ys) => { const k = xs.map((x, i) => i).filter(i => xs[i] >= lo && xs[i] <= hi); return [k.map(i => xs[i]), k.map(i => ys[i])]; };
+  const shapes = [
+    { type: 'rect', x0: c.ref - W, x1: c.ref + W, yref: 'paper', y0: 0, y1: 1, fillcolor: '#2563eb', opacity: 0.06, line: { width: 0 } },
+    { type: 'line', x0: c.ref, x1: c.ref, yref: 'paper', y0: 0, y1: 1, line: { color: '#9ca3af', dash: 'dot' } }];
+  const annotations = [{ x: c.ref, yref: 'paper', y: 1.0, yanchor: 'bottom', showarrow: false,
+    text: `reference ${c.ref} eV (tabulated, target)`, font: { size: 11, color: '#6b7280' } }];
+  if (c.ok) {
+    shapes.push({ type: 'line', x0: c.found, x1: c.found, yref: 'paper', y0: 0, y1: 1, line: { color: '#dc2626', dash: 'dash', width: 2 } });
+    annotations.push({ x: c.found, yref: 'paper', y: 0.92, xanchor: 'right', showarrow: false,
+      text: `USED: max ${c.found.toFixed(3)} eV `, font: { size: 11, color: '#dc2626' } });
+  }
+
+  const tr = [];
+  if (c.method === 'legacy') {
+    const [x, y] = clip(c.energy, c.deriv);
+    tr.push({ x, y, mode: 'lines+markers', name: 'diff(2) of log10', marker: { size: 4 } });
+  } else {
+    let [x, y] = clip(c.deriv_energy, c.deriv_raw);
+    tr.push({ x, y, mode: 'markers', name: 'raw dμ/dE', marker: { size: 4, color: '#9ca3af' } });
+    [x, y] = clip(c.deriv_energy, c.deriv);
+    tr.push({ x, y, mode: 'markers', name: 'smoothed dμ/dE', marker: { size: 5, color: '#2563eb' } });
+    if (c.spline_energy)
+      tr.push({ x: c.spline_energy, y: c.spline_deriv, mode: 'lines', name: 'spline derivative', line: { color: '#2563eb', width: 2 } });
+  }
+  if (c.ok && c.found_deriv != null)
+    tr.push({ x: [c.found], y: [c.found_deriv], mode: 'markers', name: 'used (max)',
+              marker: { size: 13, color: '#dc2626', symbol: 'circle-open', line: { width: 2 } } });
+  else if (c.ok && c.method === 'legacy') {
+    const k = c.energy.indexOf(c.found);
+    tr.push({ x: [c.found], y: [c.deriv[k]], mode: 'markers', name: 'used (max)',
+              marker: { size: 13, color: '#dc2626', symbol: 'circle-open', line: { width: 2 } } });
+  }
+  const top = { ...LAYOUT, margin: { ...LAYOUT.margin, t: 30 }, hovermode: 'closest' };
+  Plotly.react('plotCalD', tr, { ...top, shapes, annotations, xaxis: { title: 'Energy (eV, uncalibrated)', range: [lo, hi] },
+    yaxis: { title: 'dμ/dE' } }, PLOT_CFG);
+
+  const mt = [];
+  if (c.method === 'legacy') mt.push({ x: c.energy, y: c.mu, mode: 'lines', name: 'log10(num/den − min)' });
+  else {
+    mt.push({ x: c.energy, y: c.mu, mode: 'markers', name: 'μ raw', marker: { size: 3, color: '#9ca3af' } });
+    mt.push({ x: c.mu_energy, y: c.mu_smooth, mode: 'lines', name: 'μ smoothed', line: { color: '#2563eb' } });
+  }
+  Plotly.react('plotCalMu', mt, { ...top, shapes, annotations, yaxis: { title: 'μ' } }, PLOT_CFG);
+}
+</script>
+</body>
+</html>
