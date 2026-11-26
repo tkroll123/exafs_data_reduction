@@ -11,15 +11,18 @@ For each scan it
 * reads the SSRL ASCII header and data block (no hard-coded column positions),
 * guesses which columns are energy, I0, I1, the reference foil and the
   fluorescence channels (`SCA1_n`, `SCA2_n`, `FFn`, …) — every guess can be changed,
-* drops bad fluorescence channels automatically (too many zero-count points)
-  and lets you drop more by clicking,
+* drops bad fluorescence channels automatically — dead channels, channels with
+  zero counts, channels with sudden local drops (e.g. dead-time losses when a
+  diffraction peak hits part of the detector) and channels with excess noise —
+  and shows the reason; any choice can be overridden by clicking,
 * picks the fluorescence detector that actually carries the signal
   (highest edge-jump signal-to-noise) when several are recorded,
 * calibrates the energy axis with the reference foil
   (maximum of dμ/dE near the tabulated edge, with Gaussian smoothing and a
   cubic-spline derivative, or the original XAS_Worker method),
-* sums the good channels and divides by I0 (`SumRatio`),
-* merges several scans by adding counts (Σ counts / Σ I0),
+* sums the good channels, divides by I0 and multiplies by the mean I0 of the
+  scan (`SumRatio = Σ channels / I0 · ⟨I0⟩`, so a weak beam gives a lower weight),
+* merges several scans by adding counts (Σ counts / Σ I0 · ⟨I0⟩),
 * writes `*_processed.dat` and `*_merged_Nscans.dat` text files whose
   header records every setting used.
 
@@ -62,6 +65,10 @@ py -m venv .venv
 
 Then open <http://127.0.0.1:5050> in the browser. Stop the server with
 `Ctrl+C` in the terminal.
+
+On macOS / Linux, `./start.sh` (or `bash start.sh`) does all of this in one step:
+it creates the virtual environment on first use, starts the server and opens
+the page in Chrome (or the default browser).
 
 The server only listens on `127.0.0.1` (your own computer). Opened scans are
 kept in memory and are forgotten when the server stops; your files on disk

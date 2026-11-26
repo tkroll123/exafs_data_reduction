@@ -157,8 +157,10 @@ Menu section & Purpose \\
 Tab & Shows \\
 \midrule
 \ui{File info}      & Header fields, which column was assigned to which role, raw header text. \\
-\ui{Raw columns}    & Any columns against energy; optionally divided by I0, log axis, calibrated energy. \\
-\ui{Channels / I0}  & Detector table with signal-to-noise; mean of every channel / I0 as bars (click to drop);
+\ui{Raw columns}    & Any columns against energy or against elapsed time (\ui{x = elapsed time}, e.g.\ to look
+                      at I0 during the scan); optionally divided by I0, log axis, calibrated energy. \\
+\ui{Channels / I0}  & Detector table with signal-to-noise; channel quality table (Section~\ref{sec:quality});
+                      mean of every channel / I0 as bars (click to drop);
                       every used channel / I0 against energy. \\
 \ui{Summed ratio}   & $\Sigma$ fluorescence / I0 on the calibrated energy axis, transmission $\ln(I_0/I_1)$,
                       statistics. \\
@@ -223,8 +225,9 @@ Every change is applied immediately and the plots of the current file are update
         or the first column.
   \item[I0] Incident-intensity monitor, default \col{I0}.
   \item[I1] Transmission detector, default \col{I1}; ``none'' turns off the transmission curve.
-  \item[Auto-drop] A fluorescence channel with at least this many points equal to exactly zero is
-        dropped automatically (default 5, as in XAS\_Worker; 0 switches automatic dropping off).
+  \item[Zero drop] A fluorescence channel with at least this many points equal to exactly zero is
+        dropped automatically (default 5, as in XAS\_Worker; 0 switches this test off). See also the
+        quality check in Section~\ref{sec:quality}.
 \end{description}
 
 \subsection{Fluorescence channels and detector}
@@ -237,14 +240,81 @@ Every change is applied immediately and the plots of the current file are update
         \emph{auto} the detector with the highest edge-jump signal-to-noise ratio (below) is used and its
         name is shown in the drop-down; you can also choose one detector or \emph{all detectors}. With only
         one detector the menu is inactive.
+  \item[Distortion $\sigma$] Limit of the distortion test (Section~\ref{sec:quality}), default 15;
+        0 switches it off.
+  \item[Outlier limit] Strictness of the noise and spike tests, default 3; 0 switches them off.
+        The tick boxes \ui{distortion}, \ui{noise} and \ui{spikes} choose which tests are used
+        (default: distortion and noise).
 \end{description}
 
 The \textbf{channel grid} shows each channel with a colour:
 \textcolor{green!50!black}{\textbf{green}} = used,
 \textcolor{red!70!black}{\textbf{red}} = dropped automatically,
 \textcolor{gray}{\textbf{grey, crossed out}} = dropped by you,
-dark = belongs to a detector that is not used. Click a channel (or its bar in the
-\ui{Channels / I0} tab) to drop it or take it back. Hovering shows the number of zero points.
+dark = belongs to a detector that is not used,
+green with a \textcolor{orange}{\textbf{yellow frame}} = kept by you although the automatic check would drop it.
+Hovering shows why a channel was dropped and its quality values. Clicking a channel
+(or its bar in the \ui{Channels / I0} tab) works as follows:
+used $\to$ manual drop $\to$ used; automatically dropped $\to$ kept anyway $\to$ automatically dropped.
+Manual drops and keeps are stored per file (\ui{Copy drops to all files} copies both).
+
+\subsection{Automatic channel quality check}\label{sec:quality}
+Every channel is compared with a \emph{reference} spectrum made from the clean channels of the
+same detector, which all see the same sample. With $r_c = F_c/I_0$ and $E_0$ the tabulated foil edge:
+\begin{enumerate}
+  \item pre-edge level $p_c$ = mean of $r_c$ at $E_0-150\ldots E_0-20$\,eV, post-edge level $q_c$ at
+        $E_0+50\ldots E_0+200$\,eV, edge jump $j_c = q_c-p_c$, normalized spectrum $n_c=(r_c-p_c)/j_c$;
+  \item first reference: at each energy the mean of the \emph{tightest third} of the $n_c$ (``shorth'').
+        The clean channels agree closely and form this tight group, even when more than half of
+        the channels are disturbed at that energy (a plain median would be pulled along);
+  \item each channel is fitted robustly as $r_c \approx b_c + a_c\cdot\text{reference}$ (background
+        $b_c$, signal $a_c$); the residual $(r_c-\text{model})/a_c$ is what is special about the channel;
+  \item the reference is rebuilt three times as the median of the 40\,\% of channels with the smallest
+        distortion (below).
+\end{enumerate}
+From the residual these numbers are computed (shown in the \ui{Channel quality} table of the
+\ui{Channels / I0} tab and in the tooltip of each channel):
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Value & Meaning and rule\\
+\midrule
+Edge jump    & $j_c$ in \% of the median jump. Below 30\,\% the channel is \textbf{dead} and always dropped.\\
+Distortion   & largest deviation of the 5-point running mean of the residual, divided by the noise of
+               that running mean (from the channel's own point-to-point scatter), i.e.\ in $\sigma$.
+               The table also gives its size (\% of the edge jump) and energy.
+               Dropped when above \ui{Distortion $\sigma$} (default 15). This catches sudden drops
+               or steps that do not average out when scans are merged, in particular \textbf{dead-time
+               losses from diffraction}: when a Bragg peak of the sample hits some detector elements,
+               their total count rate rises, fewer counts fall into the fluorescence window, and
+               $F_c/I_0$ drops suddenly and recovers slowly as the peak moves on with energy.
+               The limit is absolute, because often most channels are hit at the same energy.\\
+Noise        & robust (median-absolute-deviation) scatter of the residual divided by the
+               counting-statistics expectation $\sqrt{\text{counts}}$; 1 = ideal. Dropped when above
+               median $+\,k\cdot$MAD of the live channels, $k$ = \ui{Outlier limit} (default 3).\\
+Spikes       & number of points deviating by more than $6\sigma$ (Poisson); same relative rule.
+               Off by default.\\
+\bottomrule
+\end{tabularx}
+\end{center}
+The tick boxes \ui{distortion}, \ui{noise} and \ui{spikes} switch the tests on or off.
+
+\paragraph{Why these defaults.} The rules were tested on 22 Fe K-edge scans (24-element detector)
+for which the channels had been selected by hand.
+\begin{itemize}
+  \item Many scans show sudden drops of 5--30\,\% in a group of channels (e.g.\ \file{acid\_015}
+        at 7600\,eV). The distortion test at 15$\sigma$ removes them: 144 channels in total, of which
+        131 had also been removed by hand; in \file{acid\_015} it drops exactly the 13 disturbed channels
+        plus the dead one.
+  \item The hand selections removed 5--19 of 24 channels; the summed spectrum with the automatic
+        selection is still about 10\,\% less noisy, because channels that are only slightly
+        different were kept.
+  \item The spike test removed many more channels, increased the noise of the sum and did not reduce
+        the number of spikes in it (these are glitches common to all channels), so it is off by default.
+\end{itemize}
+A lower \ui{Distortion $\sigma$} (e.g.\ 10) also removes channels with smaller dips; clean channels
+typically lie at 5--10$\sigma$. The quality check needs a foil element and a scan covering
+$E_0-150\ldots E_0+200$\,eV; otherwise only the zero-count test is used and a note is shown.
 
 \paragraph{Detector score.} For each detector the used channels are summed and
 divided by I0, giving $y(E)$. With $E_0$ the tabulated foil energy:
@@ -318,10 +388,15 @@ Sc & Ti & V & Cr & Mn & Fe & Co & Ni & Cu & Zn\\
 \section{Results of one scan}
 %=====================================================================
 \[
-  \text{SumRatio}(E_\text{cal}) = \frac{\sum_{c\,\in\,\text{used}} F_c}{I_0},
+  \text{SumRatio}(E_\text{cal}) = \frac{\sum_{c\,\in\,\text{used}} F_c}{I_0}\;\langle I_0\rangle,
   \qquad
   \text{transmission} = \ln\frac{I_0}{I_1}.
 \]
+$\langle I_0\rangle$ is the mean I0 of the scan (written to the header as \texttt{I0\_mean}; values
+$\le 0$ are ignored). Multiplying by it keeps SumRatio in units of counts at the average beam
+intensity: a scan taken with a weaker beam gives a correspondingly smaller SumRatio, so the
+weight of a scan reflects the incident flux it actually received (for a sample of constant
+concentration).
 The \ui{Summed ratio} tab shows both curves, the calibration shift, the used and
 dropped channels, and the statistics written to the output file (mean, minimum and
 maximum of SumRatio, I0, I1; energy range; shift).
@@ -334,18 +409,22 @@ Tick the scans to combine in the file list (at least two) and click
 (columns, detector, drops, calibration). The scans are then combined by
 \textbf{adding counts}, as if all good channels of all scans were one large detector:
 \[
-  \text{merged}(E) = \frac{\sum_\text{scans}\sum_{c\,\in\,\text{used}} F_c(E)}{\sum_\text{scans} I_0(E)},
+  \text{merged}(E) = \frac{\sum_\text{scans}\sum_{c\,\in\,\text{used}} F_c(E)}{\sum_\text{scans} I_0(E)}\;\langle I_0\rangle,
   \qquad
   \text{transmission} = \ln\frac{\sum I_0}{\sum I_1}.
 \]
 No scan is rescaled; each contributes in proportion to its counts (shown as
-``Share of counts'' in the table).
+``Share of counts'' in the table). $\langle I_0\rangle$ is the mean I0 of one point of one scan,
+averaged over all merged scans and points (\texttt{I0\_mean} in the header), so the merged
+curve is on the same scale as the single scans.
 
 \begin{description}
   \item[Energy grid: interpolate to first scan] (default) Every scan is linearly interpolated onto the
-        calibrated energies of the first ticked scan (in file-list order). There is no extrapolation: a scan
-        only contributes inside its own energy range; the column \col{N\_scans} of the output tells how many
-        scans contributed to each point.
+        calibrated energies of the first ticked scan (in file-list order). There is no extrapolation, and
+        only grid points covered by \emph{all} scans are kept: because counts are added, a point where one
+        scan is missing would get a different mix of scans and jump (e.g.\ the last point, when the
+        calibration shifts differ by a few hundredths of an eV). The left-out points are listed in the
+        \ui{Merged} tab and in the header (\texttt{points\_left\_out}); usually it is the first and/or last point.
   \item[Energy grid: point-by-point] Points are combined by index, the energy is the mean of the
         calibrated energies (XAS\_Worker default). All scans must have the same number of points.
 \end{description}
@@ -364,6 +443,10 @@ together with raw scans.
   \item[Download selected (N)] saves every ticked file, one after the other, each as its own
         \file{\_processed.dat}. N is the number of ticked files.
   \item[Download merged] saves \file{<common prefix>\_merged\_<N>scans.dat}.
+  \item[Overhead s/pt] time per point spent moving motors and reading out, which the scan file does
+        not record (default 1.7\,s). It is used only for the column \col{Elapsed\_s}. The default was
+        measured at BL7-3: consecutive scans of 506 points with 1195\,s counting time started
+        2030--2070\,s apart, i.e.\ about 1.7\,s per point.
 \end{description}
 The name follows XAS\_Worker: \file{sample\_A.001} $\to$ \file{sample\_A001\_processed.dat}.
 Files are saved to the browser's download folder. If Chrome's setting \emph{Ask where
@@ -382,25 +465,35 @@ Plain text. Header lines start with \texttt{\#} and are grouped in sections:
   \item[[source]] original file, format, collection date, beamline, detector / region files, scan
         parameters, comments, number of points.
   \item[[channels]] energy / I0 / I1 columns, detector mode and detector used, a line per detector with
-        channels used, edge jump, noise and S/N, then the lists of used, automatically dropped, manually
-        dropped and switched-off channels.
+        channels used, edge jump, noise and S/N, then the lists of used, automatically dropped (with the
+        rules and the reason for each channel), kept-by-you, manually dropped and switched-off channels.
   \item[[energy calibration]] element, reference energy, foil columns, method, smoothing, spline step,
         search window, edge found and shift (or the error).
-  \item[[statistics]] mean/min/max of SumRatio, I0, I1 and the energy range.
+  \item[[statistics]] mean/min/max of SumRatio, I0, I1, the energy range and \texttt{I0\_mean}.
+  \item[[time]] \texttt{scan\_start} (date and time from the scan header), the count-time columns used,
+        the overhead per point and the estimated scan duration.
   \item[[data]] the column names, then the data, sorted by energy.
 \end{description}
 \begin{center}
-\begin{tabular}{@{}ll@{}}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
 \toprule
 Column & Meaning\\
 \midrule
 \col{Energy\_cal} & calibrated energy (eV) $= E_\text{raw} + \Delta$\\
 \col{Energy\_raw} & energy as recorded (eV)\\
-\col{SumRatio}    & $\sum$ used channels / I0\\
+\col{SumRatio}    & $\sum$ used channels / I0 $\times$ \texttt{I0\_mean}\\
+\col{sum\_of\_used\_SCA1} & sum of the raw counts of the used channels; named after the detector in use
+                    (e.g.\ \col{sum\_of\_used\_SCA2}, or \col{sum\_of\_used\_SCA1\_SCA2} with \emph{all detectors})\\
 \col{I0}          & I0 counts\\
-\col{ln(I0/I1)}   & transmission (only if I1 is set)\\
+\col{Scatter}     & raw counts of the foil denominator column (and of the numerator, if it is not I0)\\
+\col{ln(I0/Scatter)} & reference foil absorbance $\ln(\text{num}/\text{denom})$ used for the calibration;
+                    the name follows the foil columns chosen (e.g.\ \col{ln(I1/I2)})\\
+\col{Count\_time\_s} & counting time of the point (s), from \col{Real time clock}\\
+\col{Sum\_count\_time\_s} & cumulative counting time since the scan start (s), from \col{Sum\_RTC}\\
+\col{Elapsed\_s}  & time from \texttt{scan\_start} to the middle of the point (s):
+                    $\text{Sum\_count\_time} - \text{Count\_time}/2 + \text{overhead}\times\text{point number}$\\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 Example header excerpt:
 \begin{shell}
@@ -414,7 +507,8 @@ Example header excerpt:
 # detector SCA1: used 30/30 channels, edge_jump=1.10234,
 #                noise=0.00053992, S/N=2042  <- selected
 # channels_used (30): SCA1_1 SCA1_2 ... SCA1_30
-# auto_dropped (>= 5 zero points) (0): none
+# auto_dropped (2): SCA1_7 SCA1_11
+# auto_drop_reasons: SCA1_7=dead SCA1_11=distortion,noise
 # [energy calibration]
 # calibrated: yes
 # element: Co
@@ -423,7 +517,12 @@ Example header excerpt:
 # edge_found_eV: 7707.6200
 # energy_shift_eV: +1.2800   (calibrated = raw + shift)
 # [data]
-# Energy_cal   Energy_raw   SumRatio   I0   ln(I0/I1)
+# [time]
+# scan_start: Mon Nov 23 22:49:10 2026   (from the file header)
+# overhead_per_point_s: 1.7
+# [data]
+# Energy_cal  Energy_raw  SumRatio  sum_of_used_SCA1  I0  Scatter  ln(I0/Scatter)
+#   Count_time_s  Sum_count_time_s  Elapsed_s
 \end{Verbatim}
 \end{shell}
 
@@ -431,16 +530,18 @@ Example header excerpt:
 The header lists the merge mode, every scan with detector, number of channels, shift,
 share of counts and dropped channels, per-scan details (comments, columns,
 calibration), and a summary of the shifts. Data columns:
-\col{Energy}, \col{SumRatio} (= \col{Sum\_counts}/\col{Sum\_I0}), \col{Sum\_counts},
+\col{Energy}, \col{SumRatio} (= \col{Sum\_counts}/\col{Sum\_I0}\,$\times$\,\texttt{I0\_mean}), \col{Sum\_counts},
 \col{Sum\_I0}, \col{N\_scans} (scans contributing to that point) and, if all scans
-have I1, \col{ln(sumI0/sumI1)}.
+have foil columns, the summed foil denominator (e.g.\ \col{Sum\_Scatter}) and the reference
+of the summed foil signals, e.g.\ \col{ln(sumI0/sumScatter)}. Time columns are not merged.
+Processed files written by earlier versions (with \col{ln(I0/I1)}) can still be opened and merged.
 
 \subsection{Opening processed files again}\label{sec:reopen}
 Files written by this program are recognised by their first line and shown as
 stored, with their settings taken from the header (\ui{File info}, \ui{Summed ratio},
 \ui{Calibration}). Menu settings do not apply to them, since the energies are already
 calibrated. They can be merged with other files; their counts are recovered exactly
-as SumRatio\,$\times$\,I0.
+from the \col{sum\_of\_used\_\ldots} or \col{Sum\_counts} column (older files: SumRatio\,$\times$\,I0).
 
 %=====================================================================
 \section{Typical workflow}
@@ -451,8 +552,10 @@ as SumRatio\,$\times$\,I0.
         correct? Change them in the menu if not.
   \item Check the element and \ui{Calibration}: the red marker should sit on the main peak of the foil
         derivative close to the dotted target line.
-  \item In \ui{Channels / I0} check which detector is used and inspect the channels; drop noisy or dead
-        channels by clicking. Use \ui{Copy drops to all files} if the same channels are bad in all scans.
+  \item In \ui{Channels / I0} check which detector is used and look at the \ui{Channel quality} table.
+        Normally the automatic check is enough; drop further channels, or keep an automatically dropped one,
+        by clicking. Dropping many good channels makes the sum noisier, so only drop channels that are
+        clearly worse than the others.
   \item Click through the other files and check calibration and channels for each.
   \item Tick the good scans, \ui{Merge checked}, inspect the \ui{Merged} tab (differences should be
         noise only), then \ui{Download merged} and/or \ui{Download selected}.

@@ -25,7 +25,7 @@ FOILS = {'Sc': 4492.8, 'Ti': 4966.4, 'V': 5465.1, 'Cr': 5989.2, 'Mn': 6539.0,
 FLUOR_RE = re.compile(r'^(SCA\d*_|FF)\d+$', re.I)
 BEAMLINE_RE = re.compile(r'^\s*(\d)(\d)\s+[A-Za-z]')   # '73 unfocused ...' -> 7, 3
 GROUP_RE = re.compile(r'^(.*?)_?\d+$')   # 'SCA1_12' -> 'SCA1', 'FF3' -> 'FF'
-ICR_RE = re.compile(r'^ICR_?\d+$', re.I)
+ICR_RE = re.compile(r'^ICR\d*_?\d+$', re.I)   # 'ICR_3', 'ICR1_3'
 
 
 class ParseError(Exception):
@@ -89,11 +89,35 @@ def result_from_processed(scan):
     e_raw = col('Energy_raw')
     i0 = col('I0', 'Sum_I0')
     sr = col('SumRatio')
-    counts = col('Sum_counts')
-    if counts is None:
-        counts = sr * i0
-    t = col('ln(I0/I1)', 'ln(sumI0/sumI1)')
-    i1 = i0 / np.exp(t) if t is not None else None
+    sec0 = m['sections']
+    i0m = next((sec0[k]['I0_mean'] for k in ('statistics', 'summary') if 'I0_mean' in sec0.get(k, {})), None)
+    try:
+        i0m = float(i0m.split()[0]) if i0m else None
+    except ValueError:
+        i0m = None
+    counts = col('Sum_counts', *[n for n in c if n.startswith('sum_of_used_')])
+    if counts is None:   # older files: SumRatio = sum / I0 (no I0_mean in the header)
+        counts = sr * i0 / (i0m if i0m else 1.0)
+    # reference foil column: ln(num/den) (processed) or ln(sumnum/sumden) (merged);
+    # older files of this app wrote ln(I0/I1) / ln(sumI0/sumI1) instead
+    t = i1 = None
+    fnum_name = fden_name = fnum = fden = ref = None
+    for name in c:
+        mm = re.match(r'^ln\((?:sum)?(.+?)/(?:sum)?(.+)\)$', name)
+        if not mm:
+            continue
+        fnum_name, fden_name = mm.group(1), mm.group(2)
+        ref = col(name)
+        fnum = col(fnum_name, 'Sum_' + fnum_name)
+        if fnum is None and fnum_name == 'I0':
+            fnum = i0
+        fden = col(fden_name, 'Sum_' + fden_name)
+        if fden is None and fnum is not None:
+            fden = fnum / np.exp(ref)
+        if fnum_name == 'I0' and fden_name == 'I1':      # old files: transmission
+            t, i1 = ref, fden
+        break
+    ct, sct, el = col('Count_time_s'), col('Sum_count_time_s'), col('Elapsed_s')
     sec = m['sections']
     ch, cal = sec.get('channels', {}), sec.get('energy calibration', {})
     lst = lambda v: [] if not v or v == 'none' else v.split()
@@ -124,8 +148,17 @@ def result_from_processed(scan):
                        'mean_ratio': None, 'jump': None, 'noise': None, 'snr': None}],
         'detector_mode': 'from file',
         'sumratio': _nan2none(sr), 'sumcounts': _nan2none(counts), 'i0': _nan2none(i0),
+        'i0_mean': i0m,
         'i1': _nan2none(i1) if i1 is not None else None,
         'transmission': _nan2none(t) if t is not None else None,
+        'foil_num_name': fnum_name if fden is not None else None,
+        'foil_den_name': fden_name if fden is not None else None,
+        'foil_num_counts': _nan2none(fnum) if fden is not None else None,
+        'foil_den_counts': _nan2none(fden) if fden is not None else None,
+        'reference': _nan2none(ref) if ref is not None else None,
+        'count_time': _nan2none(ct) if ct is not None else None,
+        'sum_count_time': _nan2none(sct) if sct is not None else None,
+        'elapsed': _nan2none(el) if el is not None else None,
         'calibration': None,
         'stats': {'sumratio': stats(sr), 'i0': stats(i0), 'i1': stats(i1),
                   'energy_min': float(np.nanmin(energy)), 'energy_max': float(np.nanmax(energy)),
@@ -262,6 +295,8 @@ def guess_roles(columns, beamline=None):
         'foil_note': foil_note,
         'fluor_channels': fluor,
         'icr_channels': [c for c in columns if ICR_RE.match(c)],
+        'time': pick('Real time clock', 'Count time', 'count_time', 'Time'),
+        'time_sum': pick('Sum_RTC'),
     }
 
 
@@ -269,6 +304,13 @@ def _col(scan, name):
     if name not in scan['columns']:
         raise KeyError(f'Column "{name}" not in file.')
     return scan['data'][:, scan['columns'].index(name)]
+
+
+def _i0_mean(i0):
+    """Mean of the valid (finite, > 0) I0 values; SumRatio is scaled by it."""
+    a = np.asarray(i0, dtype=float)
+    a = a[np.isfinite(a) & (a > 0)]
+    return float(a.mean()) if a.size else np.nan
 
 
 def _safe_div(a, b):
@@ -408,6 +450,154 @@ def score_detector(energy, summed_ratio, ref):
     return out
 
 
+QUALITY_DEFAULT_K = 3.0
+QUALITY_DEFAULT_LOCAL = 15.0
+QUALITY_LOCAL_PTS = 5
+QUALITY_SPIKE_SIGMA = 6.0
+QUALITY_DEAD_FRACTION = 0.3
+
+
+QUALITY_DEFAULT_TESTS = ('distortion', 'noise')
+
+
+def _shorth(M, frac=1 / 3):
+    """Per column: mean of the tightest group of ceil(frac*n) values. Finds the
+    cluster of clean channels even when more than half of the channels are disturbed."""
+    S = np.sort(M, axis=0)
+    n = S.shape[0]
+    h = min(n, max(2, int(np.ceil(frac * n))))
+    i = np.argmin(S[h - 1:] - S[:n - h + 1], axis=0)
+    return np.take_along_axis(S, i[None, :] + np.arange(h)[:, None], axis=0).mean(0)
+
+
+def channel_quality(energy, i0, counts, names, e0, k=QUALITY_DEFAULT_K, tests=QUALITY_DEFAULT_TESTS,
+                    local_limit=QUALITY_DEFAULT_LOCAL):
+    """Quality check of the fluorescence channels of ONE detector.
+
+    Every channel is compared with a reference spectrum built from the clean channels:
+        r_c = counts_c / I0
+        n_c = (r_c - pre_c) / jump_c        pre  = mean of r_c at E0-150 .. E0-20 eV
+                                            post = mean of r_c at E0+50 .. E0+200 eV
+                                            jump = post - pre
+        reference: first the 'shorth' (mean of the tightest third of the n_c at each energy),
+                   then, three times, the median of the 40 % of channels with the smallest
+                   distortion (below)
+        model_c  = b_c + a_c * reference    (robust least squares; b = background, a = signal)
+        res_c    = (r_c - model_c) / a_c    (in units of the channel's edge jump)
+
+    Per channel:
+        jump_rel   : jump_c / median jump                      -> 'dead' if < 0.3 (always applied)
+        distortion : largest |5-point running mean of res_c|, divided by the noise of that running
+                     mean (estimated from the channel's own point-to-point scatter).  Catches local
+                     dips / steps, e.g. dead-time losses when a diffraction peak hits some detector
+                     elements.  Flagged when > local_limit (absolute, default 15 sigma), because
+                     often MOST channels are disturbed at the same energy.
+        distortion_dev / distortion_E : size (fraction of edge jump) and energy of that deviation
+        noise      : robust (MAD) noise of res_c in units of the Poisson sigma (1 = counting
+                     statistics only)
+        spikes     : number of points with |residual| > 6 Poisson sigma
+    'noise' and 'spikes' are flagged when above median + k * MAD of the live channels of the
+    detector (an outlier among its peers). 'spikes' is off by default: on the example data it
+    dropped many channels without making the summed spectrum less noisy or less spiky.
+
+    Returns {name: {..metrics.., 'reasons': [...]}, '_limits': {...}} or None if the scan does
+    not cover the pre- and post-edge regions.
+    """
+    from scipy.ndimage import uniform_filter1d
+    W = QUALITY_LOCAL_PTS
+    o = np.argsort(energy)
+    e, i0s, F = energy[o], i0[o], counts[:, o]
+    pre = (e > e0 - 150) & (e < e0 - 20)
+    post = (e > e0 + 50) & (e < e0 + 200)
+    if pre.sum() < 5 or post.sum() < 5 or len(names) < 3:
+        return None
+    with np.errstate(divide='ignore', invalid='ignore'):
+        R = F / i0s
+    good = np.isfinite(R).all(0)
+    if not good.all():
+        e, i0s, F, R, pre, post = e[good], i0s[good], F[:, good], R[:, good], pre[good], post[good]
+    p, q = R[:, pre].mean(1), R[:, post].mean(1)
+    jump = q - p
+    mj = np.median(jump)
+    if not mj > 0:
+        return None
+    jump_rel = jump / mj
+    alive = jump_rel >= QUALITY_DEAD_FRACTION
+    if alive.sum() < 3:
+        return None
+    N = (R - p[:, None]) / jump[:, None]
+    n = len(names)
+
+    def fit_all(ref):
+        A = np.vstack([np.ones_like(ref), ref]).T
+        out = {}
+        for c in np.where(alive)[0]:
+            w = np.ones(len(e), bool)
+            for _ in range(3):                      # robust: ignore outlying points in the fit
+                coef, *_ = np.linalg.lstsq(A[w], R[c][w], rcond=None)
+                if not coef[1] > 0:
+                    break
+                res = (R[c] - A @ coef) / coef[1]
+                s = 1.4826 * np.median(np.abs(res[w] - np.median(res[w])))
+                w = np.abs(res) < 5 * max(s, 1e-12)
+            out[c] = (coef, A @ coef)
+        return out
+
+    ref = _shorth(N[alive])
+    for it in range(4):
+        fits = fit_all(ref)
+        dist, dist_dev, dist_E = np.full(n, np.nan), np.full(n, np.nan), np.full(n, np.nan)
+        for c, (coef, m) in fits.items():
+            if not coef[1] > 0:
+                dist[c] = np.inf
+                continue
+            res = (R[c] - m) / coef[1]
+            sm = uniform_filter1d(res, W)
+            sig = 1.4826 * np.median(np.abs(res - sm)) * np.sqrt(1 / (W - 1))   # noise of a W-point mean
+            j = int(np.argmax(np.abs(sm)))
+            dist[c] = abs(sm[j]) / max(sig, 1e-12)
+            dist_dev[c], dist_E[c] = sm[j], e[j]
+        if it == 3:
+            break
+        live_d = dist[alive]
+        clean = alive & (dist <= np.percentile(live_d[np.isfinite(live_d)], 40))
+        if clean.sum() >= 2:
+            ref = np.median(N[clean], axis=0)
+
+    noise, spikes = np.full(n, np.nan), np.zeros(n, int)
+    for c, (coef, m) in fits.items():
+        z = (R[c] - m) / (np.sqrt(np.maximum(m * i0s, 1.0)) / i0s)
+        noise[c] = 1.4826 * np.median(np.abs(z))
+        spikes[c] = int((np.abs(z) > QUALITY_SPIKE_SIGMA).sum())
+
+    def limit(x):
+        a = x[alive]
+        med = float(np.median(a))
+        mad = float(1.4826 * np.median(np.abs(a - med)))
+        return med + k * max(mad, 1e-12 * max(abs(med), 1.0))
+    lim = {'distortion': float(local_limit), 'noise': limit(noise), 'spikes': limit(spikes.astype(float))}
+    fin = lambda v: None if v is None or not np.isfinite(v) else float(v)
+    out = {}
+    for c, name in enumerate(names):
+        reasons = []
+        if not alive[c]:
+            reasons.append('dead')
+        elif k > 0 or local_limit > 0:
+            val = {'distortion': dist[c], 'noise': noise[c], 'spikes': spikes[c]}
+            on = {'distortion': local_limit > 0, 'noise': k > 0, 'spikes': k > 0}
+            reasons += [t for t in ('distortion', 'noise', 'spikes')
+                        if t in tests and on[t] and val[t] > lim[t]]
+        out[name] = {'jump_rel': float(jump_rel[c]),
+                     'distortion': fin(dist[c]) if alive[c] else None,
+                     'distortion_dev': fin(dist_dev[c]) if alive[c] else None,
+                     'distortion_E': fin(dist_E[c]) if alive[c] else None,
+                     'noise': fin(noise[c]) if alive[c] else None,
+                     'spikes': int(spikes[c]) if alive[c] else None,
+                     'reasons': reasons}
+    out['_limits'] = lim
+    return out
+
+
 def process(scan, cfg):
     """Workup of one scan (equivalent of XAS_Worker.workup_data, without the PDF).
 
@@ -422,31 +612,83 @@ def process(scan, cfg):
     energy = _col(scan, cfg['energy'])
     i0 = _col(scan, cfg['i0'])
     i1 = _col(scan, cfg['i1']) if cfg.get('i1') else None
+    fnum_name, fden_name = cfg.get('foil_num'), cfg.get('foil_den')
+    fnum = _col(scan, fnum_name) if fnum_name else None
+    fden = _col(scan, fden_name) if fden_name else None
+    reference = None
+    if fnum is not None and fden is not None:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            reference = np.log(_safe_div(fnum, fden))
+    roles = guess_roles(scan['columns'])
+    tcol = cfg.get('time_col') or roles['time']
+    tsum_col = cfg.get('time_sum_col') or roles['time_sum']
+    count_time = _col(scan, tcol) if tcol in scan['columns'] else None
+    sum_count_time = _col(scan, tsum_col) if tsum_col in scan['columns'] else None
+    if sum_count_time is None and count_time is not None:
+        sum_count_time = np.cumsum(count_time)
+    overhead = float(cfg.get('overhead_per_point', DEFAULT_OVERHEAD_S))
+    elapsed = None
+    if count_time is not None:
+        # time from scan start to the MIDDLE of the counting of each point:
+        # every point = overhead (move + readout) + counting; points in recorded order
+        elapsed = sum_count_time - count_time / 2 + overhead * np.arange(1, len(count_time) + 1)
 
     fluor = [c for c in cfg.get('fluor_channels', []) if c in scan['columns']]
     manual = set(cfg.get('manual_drops', []))
+    force_keep = set(cfg.get('force_keep', []))
     thr = int(cfg.get('auto_drop_threshold', 5))
+    qk = float(cfg.get('quality_k', QUALITY_DEFAULT_K) or 0)
+    qtests = tuple(cfg.get('quality_tests', QUALITY_DEFAULT_TESTS))
+    qlocal = float(cfg.get('local_limit', QUALITY_DEFAULT_LOCAL) or 0)
+    ref = FOILS.get(cfg.get('element'))
+
+    groups = {}
+    for c in fluor:
+        groups.setdefault(detector_of(c), []).append(c)
+
+    # ---- reasons for automatic rejection: zero counts, then quality vs. the other channels
+    reasons = {c: [] for c in fluor}
+    zeros = {}
+    for c in fluor:
+        zeros[c] = int((_col(scan, c) == 0.0).sum())
+        if thr > 0 and zeros[c] >= thr:
+            reasons[c].append('zeros')
+    quality, quality_note = {}, None
+    if ref is None:
+        quality_note = 'quality check needs a foil element (edge energy)'
+    for g, chs in groups.items():
+        live = [c for c in chs if 'zeros' not in reasons[c]]
+        if ref is None or len(live) < 3:
+            continue
+        q = channel_quality(energy, i0, scan['data'][:, [scan['columns'].index(c) for c in live]].T,
+                            live, ref, qk, qtests, qlocal)
+        if q is None:
+            quality_note = (f'quality check skipped for {g}: scan does not cover '
+                            f'{ref - 150:.0f}-{ref + 200:.0f} eV or no edge found')
+            continue
+        quality[g] = {'limits': q.pop('_limits')}
+        for c, info in q.items():
+            quality[c] = info
+            if qk > 0 or qlocal > 0:
+                reasons[c] += info['reasons']
 
     channels, auto_dropped, kept = {}, [], []
     for c in fluor:
         v = _col(scan, c)
-        nzero = int((v == 0.0).sum())
         if c in manual:
             status = 'manual'
-        elif thr > 0 and nzero >= thr:
+        elif reasons[c] and c not in force_keep:
             status = 'auto'
             auto_dropped.append(c)
         else:
             status = 'kept'
             kept.append(c)
-        channels[c] = {'name': c, 'status': status, 'zeros': nzero, 'detector': detector_of(c),
+        channels[c] = {'name': c, 'status': status, 'zeros': zeros[c], 'detector': detector_of(c),
+                       'reasons': reasons[c], 'forced': bool(reasons[c]) and c in force_keep and c not in manual,
+                       'quality': quality.get(c),
                        'ratio': _nan2none(_safe_div(v, i0))}
 
     # ---- detector selection: only one of SCA1 / SCA2 / ... carries the signal
-    groups = {}
-    for c in fluor:
-        groups.setdefault(detector_of(c), []).append(c)
-    ref = FOILS.get(cfg.get('element'))
     detectors = []
     for g, chs in groups.items():
         gk = [c for c in chs if c in kept]
@@ -475,9 +717,11 @@ def process(scan, cfg):
     kept = [c for c in kept if channels[c]['status'] == 'kept']
     auto_dropped = [c for c in auto_dropped if channels[c]['status'] == 'auto']
 
+    i0_mean = _i0_mean(i0)
     if kept:
         summed = scan['data'][:, [scan['columns'].index(c) for c in kept]].sum(axis=1)
-        sumratio = _safe_div(summed, i0)
+        # sum / I0 * mean(I0): stays in counts and keeps the incident-beam weighting
+        sumratio = _safe_div(summed, i0) * i0_mean
     else:
         sumratio = np.full_like(energy, np.nan)
 
@@ -513,11 +757,29 @@ def process(scan, cfg):
         'manual_dropped': sorted(c for c in manual & set(fluor) if channels[c]['status'] == 'manual'),
         'detectors': detectors,
         'detector_mode': want,
+        'quality_k': qk,
+        'quality_tests': list(qtests),
+        'local_limit': qlocal,
+        'quality_note': quality_note,
+        'quality_limits': {g: quality[g]['limits'] for g in groups if g in quality},
+        'forced_kept': sorted(c for c in kept if channels[c]['forced']),
         'sumratio': _nan2none(sumratio),
         'sumcounts': _nan2none(summed) if kept else None,
+        'i0_mean': i0_mean if np.isfinite(i0_mean) else None,
         'i1': _nan2none(i1) if i1 is not None else None,
         'transmission': _nan2none(trans) if trans is not None else None,
         'i0': _nan2none(i0),
+        'foil_num_name': fnum_name if reference is not None else None,
+        'foil_den_name': fden_name if reference is not None else None,
+        'foil_num_counts': _nan2none(fnum) if reference is not None else None,
+        'foil_den_counts': _nan2none(fden) if reference is not None else None,
+        'reference': _nan2none(reference) if reference is not None else None,
+        'time_col': tcol if count_time is not None else None,
+        'time_sum_col': tsum_col if tsum_col in scan['columns'] else None,
+        'count_time': _nan2none(count_time) if count_time is not None else None,
+        'sum_count_time': _nan2none(sum_count_time) if sum_count_time is not None else None,
+        'elapsed': _nan2none(elapsed) if elapsed is not None else None,
+        'overhead_per_point': overhead,
         'calibration': cal,
         'stats': {'sumratio': stats(sumratio), 'i0': stats(i0),
                   'i1': stats(i1) if i1 is not None else None,
@@ -527,6 +789,13 @@ def process(scan, cfg):
 
 
 # --------------------------------------------------------------------------- export
+DEFAULT_OVERHEAD_S = 1.7   # s per point; measured at BL7-3 from the time between scan starts
+
+
+def _safe_name(name):
+    return re.sub(r'\s+', '_', str(name).strip())
+
+
 def output_basename(filename):
     """XAS_Worker naming: 'name_A.001' -> 'name_A001'."""
     import os
@@ -571,9 +840,19 @@ def export_text(scan, cfg, res, app_version='EXAFS Data Reduction (Flask)'):
         H.append(f'detector {d["name"]}: used {d["n_kept"]}/{d["n_channels"]} channels, '
                  f'edge_jump={f(d["jump"])}, noise={f(d["noise"])}, S/N={f(d["snr"], 4)}'
                  f'{"  <- selected" if d["selected"] else ""}')
+    qk = res.get('quality_k', 0)
     H += [f'channels_used ({len(res["kept"])}): {" ".join(res["kept"]) or "none"}',
-          f'auto_dropped (>= {cfg.get("auto_drop_threshold")} zero points) ({len(res["auto_dropped"])}): '
-          f'{" ".join(res["auto_dropped"]) or "none"}',
+          f'auto_dropped ({len(res["auto_dropped"])}): {" ".join(res["auto_dropped"]) or "none"}',
+          f'auto_drop_rules: zeros = >= {cfg.get("auto_drop_threshold")} zero-count points; '
+          + (f'dead = edge jump < {QUALITY_DEAD_FRACTION:g} x median; distortion = local deviation from the '
+             f'clean-channel reference > {res.get("local_limit", 0):g} sigma; noise/spikes = above median + '
+             f'{qk:g} x MAD of the channels of the detector; tests: '
+             f'{", ".join(["dead"] + res.get("quality_tests", []))}'
+             if (qk > 0 or res.get('local_limit', 0) > 0) else 'quality check off'),
+          f'auto_drop_reasons: '
+          + (' '.join(f'{c}={",".join(ch[c]["reasons"])}' for c in res['auto_dropped']) or 'none'),
+          f'kept_despite_auto_reasons (forced) ({len(res.get("forced_kept", []))}): '
+          f'{" ".join(res.get("forced_kept", [])) or "none"}',
           f'manual_dropped ({len(res["manual_dropped"])}): {" ".join(res["manual_dropped"]) or "none"}',
           f'other_detector_off ({len(off)}): {" ".join(off) or "none"}']
 
@@ -601,14 +880,44 @@ def export_text(scan, cfg, res, app_version='EXAFS Data Reduction (Flask)'):
         if st.get(k):
             H.append(f'{k}: mean={f(st[k]["mean"])} min={f(st[k]["min"])} max={f(st[k]["max"])}')
     H.append(f'energy_range_eV: {st["energy_min"]:.3f} - {st["energy_max"]:.3f}')
+    H.append(f'I0_mean: {f(res.get("i0_mean"), 8)}   (mean of I0 over the scan; SumRatio = sum / I0 * I0_mean)')
 
-    cols = ['Energy_cal', 'Energy_raw', 'SumRatio', 'I0']
-    arrs = [res['energy'], res['energy_raw'], res['sumratio'], res['i0']]
-    if res.get('transmission') is not None:
-        cols.append('ln(I0/I1)'); arrs.append(res['transmission'])
-    H += ['', '[data]',
-          'SumRatio = sum(channels_used) / I0;  Energy_cal = Energy_raw + energy_shift_eV',
-          '   '.join(cols)]
+    H += ['', '[time]',
+          f'scan_start: {m.get("date", "n/a")}   (from the file header)']
+    if res.get('count_time') is not None:
+        ov = res.get('overhead_per_point', DEFAULT_OVERHEAD_S)
+        H += [f'count_time_column: {res["time_col"]}   -> Count_time_s (counting time of each point)',
+              f'sum_count_time_column: {res.get("time_sum_col") or "cumulative sum of Count_time_s"}   '
+              f'-> Sum_count_time_s (counting time only, from the start of the scan)',
+              f'overhead_per_point_s: {ov:g}   (motor move + readout per point, not recorded in the file)',
+              'Elapsed_s = Sum_count_time_s - Count_time_s/2 + overhead_per_point_s * point_number '
+              '= time from scan_start to the middle of the counting of the point',
+              f'scan_duration_estimate_s: {res["elapsed"][-1] + res["count_time"][-1] / 2:.0f}']
+    else:
+        H.append('no count-time column found in the file')
+
+    cols = ['Energy_cal', 'Energy_raw', 'SumRatio']
+    arrs = [res['energy'], res['energy_raw'], res['sumratio']]
+    i0m = res.get('i0_mean')
+    defs = [f'SumRatio = sum(channels_used) / I0 * mean(I0);  mean(I0) = I0_mean = {f(i0m, 8)};  '
+            'Energy_cal = Energy_raw + energy_shift_eV']
+    if res.get('sumcounts') is not None:
+        sumcol = 'sum_of_used_' + ('_'.join(_safe_name(x) for x in sel) or 'channels')
+        cols.append(sumcol); arrs.append(res['sumcounts'])
+        defs.append(f'{sumcol} = sum of the raw counts of channels_used ({len(res["kept"])} channels)')
+    cols.append('I0'); arrs.append(res['i0'])
+    if res.get('reference') is not None:
+        nn, dn = _safe_name(res['foil_num_name']), _safe_name(res['foil_den_name'])
+        if res['foil_num_name'] != cfg.get('i0'):
+            cols.append(nn); arrs.append(res['foil_num_counts'])
+        if res['foil_den_name'] != cfg.get('i0'):
+            cols.append(dn); arrs.append(res['foil_den_counts'])
+        cols.append(f'ln({nn}/{dn})'); arrs.append(res['reference'])
+        defs.append(f'ln({nn}/{dn}) = reference foil absorbance (used for the energy calibration)')
+    if res.get('count_time') is not None:
+        cols += ['Count_time_s', 'Sum_count_time_s', 'Elapsed_s']
+        arrs += [res['count_time'], res['sum_count_time'], res['elapsed']]
+    H += ['', '[data]'] + defs + ['   '.join(cols)]
 
     order = np.argsort(res['energy'])
     lines = ['# ' + h if h else '#' for h in H]
@@ -624,7 +933,7 @@ def merge(items, mode='first'):
 
     For every energy point:
         merged = sum over scans of sum(channels_used counts)  /  sum over scans of I0
-        transmission = ln(sum I0 / sum I1)
+        reference    = ln(sum foil_num / sum foil_den)   (e.g. ln(sum I0 / sum Scatter))
     i.e. all good channels of all scans are treated as one big detector, so each scan
     contributes in proportion to its counts.
 
@@ -640,8 +949,9 @@ def merge(items, mode='first'):
     for s, _, r in items:
         if r.get('sumcounts') is None:
             raise ValueError(f'{s["meta"]["filename"]}: no fluorescence channels in use.')
-    has_t = all(r.get('i1') is not None for _, _, r in items)
-    keys = ['sumcounts', 'i0', 'sumratio'] + (['i1'] if has_t else [])
+    has_t = all(r.get('foil_num_counts') is not None and r.get('foil_den_counts') is not None
+                for _, _, r in items)
+    keys = ['sumcounts', 'i0', 'sumratio'] + (['foil_num_counts', 'foil_den_counts'] if has_t else [])
 
     def arr(r, k):
         return np.array([np.nan if v is None else v for v in r[k]], dtype=float)
@@ -671,18 +981,39 @@ def merge(items, mode='first'):
     # a point only counts for a scan if both its counts and its I0 exist there
     valid = np.isfinite(st['sumcounts']) & np.isfinite(st['i0'])
     if has_t:
-        valid_t = valid & np.isfinite(st['i1'])
+        valid_t = valid & np.isfinite(st['foil_num_counts']) & np.isfinite(st['foil_den_counts'])
     tot_counts = np.where(valid, st['sumcounts'], 0).sum(0)
     tot_i0 = np.where(valid, st['i0'], 0).sum(0)
     nscan = valid.sum(0)
-    merged = _safe_div(tot_counts, tot_i0)
+    merged = _safe_div(tot_counts, tot_i0)     # scaled by mean(I0) after trimming, below
     merged[nscan == 0] = np.nan
-    trans = None
+    ref = tnum = tden = None
+    names = (None, None)
     if has_t:
-        ti0 = np.where(valid_t, st['i0'], 0).sum(0); ti1 = np.where(valid_t, st['i1'], 0).sum(0)
+        tnum = np.where(valid_t, st['foil_num_counts'], 0).sum(0)
+        tden = np.where(valid_t, st['foil_den_counts'], 0).sum(0)
         with np.errstate(divide='ignore', invalid='ignore'):
-            trans = np.log(_safe_div(ti0, ti1))
-        trans[valid_t.sum(0) == 0] = np.nan
+            ref = np.log(_safe_div(tnum, tden))
+        none = valid_t.sum(0) == 0
+        ref[none] = np.nan; tnum = np.where(none, np.nan, tnum); tden = np.where(none, np.nan, tden)
+        nn = {r.get('foil_num_name') for _, _, r in items}; dn = {r.get('foil_den_name') for _, _, r in items}
+        names = (nn.pop() if len(nn) == 1 else 'foil_num', dn.pop() if len(dn) == 1 else 'foil_den')
+
+    # keep only points to which EVERY scan contributes: counts are added, so a point where
+    # a scan is missing (e.g. the last point when calibration shifts differ by 0.02 eV)
+    # would get a different mix of scans and jump.
+    full = nscan == len(items)
+    if not full.any():
+        raise ValueError('The checked scans have no energy range in common.')
+    trimmed = grid[~full]
+    grid, merged, tot_counts, tot_i0, nscan = grid[full], merged[full], tot_counts[full], tot_i0[full], nscan[full]
+    st = {k: v[:, full] for k, v in st.items()}
+    if ref is not None:
+        ref, tnum, tden = ref[full], tnum[full], tden[full]
+    # mean I0 of one scan point (all scans, all kept points): Sum_I0 / N_scans averaged,
+    # so the merged SumRatio is on the same scale as the single scans
+    i0_mean = _i0_mean(st['i0'])
+    merged = merged * i0_mean
 
     scans = []
     for (s, cfg, r), y in zip(items, st['sumratio']):
@@ -700,11 +1031,16 @@ def merge(items, mode='first'):
     for sc in scans:
         sc['count_fraction'] = sc['total_counts'] / tot if tot else None
     return {'mode': mode, 'energy': grid.tolist(), 'n_scans': len(items),
+            'n_trimmed': int(len(trimmed)), 'trimmed_energies': trimmed.tolist(),
             'n_per_point': nscan.tolist(),
             'sumratio': _nan2none(merged),
+            'i0_mean': i0_mean if np.isfinite(i0_mean) else None,
             'sumcounts': _nan2none(np.where(nscan > 0, tot_counts, np.nan)),
             'i0': _nan2none(np.where(nscan > 0, tot_i0, np.nan)),
-            'transmission': _nan2none(trans) if has_t else None,
+            'reference': _nan2none(ref) if has_t else None,
+            'foil_num_name': names[0], 'foil_den_name': names[1],
+            'sum_foil_num': _nan2none(tnum) if has_t else None,
+            'sum_foil_den': _nan2none(tden) if has_t else None,
             'scans': scans}
 
 
@@ -752,13 +1088,25 @@ def export_merged_text(items, m, app_version='EXAFS Data Reduction (Flask)'):
     shifts = [sc['shift'] for sc in m['scans']]
     H += ['', '[summary]',
           f'calibration_shift_eV: mean={np.mean(shifts):+.4f}  min={min(shifts):+.4f}  max={max(shifts):+.4f}',
-          f'energy_range_eV: {m["energy"][0]:.3f} - {m["energy"][-1]:.3f}  ({len(m["energy"])} points)']
+          f'energy_range_eV: {m["energy"][0]:.3f} - {m["energy"][-1]:.3f}  ({len(m["energy"])} points)',
+          f'points_left_out: {m.get("n_trimmed", 0)}'
+          + (f'  (not covered by all scans, at E = {", ".join(f"{x:.2f}" for x in m["trimmed_energies"])} eV)'
+             if m.get('n_trimmed') else '  (all grid points are covered by all scans)'),
+          f'I0_mean: {f(m.get("i0_mean"), 8)}   (mean I0 of one point of one scan; SumRatio = Sum_counts / Sum_I0 * I0_mean)']
     cols = ['Energy', 'SumRatio', 'Sum_counts', 'Sum_I0', 'N_scans']
     arrs = [m['energy'], m['sumratio'], m['sumcounts'], m['i0'], m['n_per_point']]
-    if m.get('transmission') is not None:
-        cols.append('ln(sumI0/sumI1)'); arrs.append(m['transmission'])
-    H += ['', '[data]', 'SumRatio = Sum_counts / Sum_I0; Sum_counts = sum over scans of sum(channels_used); '
-          'Sum_I0 = sum over scans of I0; N_scans = scans contributing to that point',
+    defs = [f'SumRatio = Sum_counts / Sum_I0 * I0_mean;  I0_mean = {f(m.get("i0_mean"), 8)} = mean I0 of one point '
+            '(all scans, all points);  Sum_counts = sum over scans of sum(channels_used); '
+            'Sum_I0 = sum over scans of I0; N_scans = scans contributing to that point']
+    if m.get('reference') is not None:
+        nn, dn = _safe_name(m['foil_num_name']), _safe_name(m['foil_den_name'])
+        if m['foil_num_name'] != cfg0.get('i0', 'I0'):
+            cols.append(f'Sum_{nn}'); arrs.append(m['sum_foil_num'])
+        if m['foil_den_name'] != cfg0.get('i0', 'I0'):
+            cols.append(f'Sum_{dn}'); arrs.append(m['sum_foil_den'])
+        cols.append(f'ln(sum{nn}/sum{dn})'); arrs.append(m['reference'])
+        defs.append(f'ln(sum{nn}/sum{dn}) = reference foil absorbance of the summed foil signals')
+    H += ['', '[data]'] + defs + [
           '   '.join(cols)]
     lines = ['# ' + h if h else '#' for h in H]
     for i in range(len(m['energy'])):

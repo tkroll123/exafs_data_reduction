@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 .DS_Store
 # original XAS_Worker sources and example beamline data (not part of this repo)
-xas_worker-master/
+# xas_worker-master/
 xas_worker-master.zip
 # LaTeX build files
 docs/*.aux
@@ -13,3 +13,4 @@ docs/*.toc
 docs/*.fls
 docs/*.fdb_latexmk
 docs/*.synctex.gz
+examples/

@@ -49,6 +49,11 @@
   #chgrid .ghead { grid-column: 1 / -1; text-align: left; background: none; color: var(--side-muted);
                    cursor: default; font-size: 11px; padding: 4px 0 0; }
   #chgrid .manual { background: #4b5563; color: #d1d5db; text-decoration: line-through; }
+  #chgrid .forced { box-shadow: inset 0 0 0 2px #fbbf24; }
+  .chk.tight { margin: 2px 0; font-size: 12px; }
+  table.det td.over { color: #dc2626; font-weight: 600; }
+  table.det tr.st-auto td:first-child { color: #dc2626; }
+  table.det tr.st-manual td:first-child { color: #6b7280; text-decoration: line-through; }
   .legend { font-size: 11px; color: var(--side-muted); margin-top: 6px; }
   .legend span { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 3px 0 8px; }
   .chk { font-size: 13px; display: flex; gap: 6px; align-items: center; margin: 5px 0; }
@@ -110,7 +115,7 @@
     <label class="row">Energy <select id="cfg-energy"></select></label>
     <label class="row">I0 <select id="cfg-i0"></select></label>
     <label class="row">I1 <select id="cfg-i1"></select></label>
-    <label class="row">Auto-drop <input type="number" id="cfg-thr" min="0" value="5"
+    <label class="row">Zero drop <input type="number" id="cfg-thr" min="0" value="5"
       title="Drop a fluorescence channel if it has at least this many zero-count points (0 = off)"></label>
   </div>
 
@@ -125,9 +130,18 @@
       value="^SCA1_\d+$"></label>
     <label class="row" title="Only one detector carries the signal. auto = highest edge-jump signal-to-noise of Σ channels / I0">Detector
       <select id="cfg-det"><option value="auto">auto (best S/N)</option></select></label>
+    <label class="row" title="Distortion test: a channel is dropped when its spectrum deviates locally (5-point average) from the reference built from the clean channels by more than this many sigma of its own noise. Catches sudden drops / steps, e.g. dead-time losses when a diffraction peak hits some detector elements. 0 = off.">Distortion σ
+      <input type="number" id="cfg-ql" min="0" step="1" value="15"></label>
+    <label class="row" title="Noise / spike tests: a channel is dropped when it is an outlier among the channels of its detector, i.e. above median + this many MAD (robust standard deviations). 0 = off. Dead channels (edge jump below 30 % of the median) are always dropped.">Outlier limit
+      <input type="number" id="cfg-qk" min="0" step="0.5" value="3"></label>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:2px 0 4px 98px">
+      <label class="chk tight" title="Local dips / steps compared with the clean channels (limit: Distortion σ)"><input type="checkbox" class="cfg-qt" value="distortion" checked> distortion</label>
+      <label class="chk tight" title="Point-to-point noise above counting statistics"><input type="checkbox" class="cfg-qt" value="noise" checked> noise</label>
+      <label class="chk tight" title="Number of single-point outliers (> 6 Poisson sigma). Off by default: on the example data it removed many channels without making the sum less noisy."><input type="checkbox" class="cfg-qt" value="spikes"> spikes</label>
+    </div>
     <div id="chgrid"></div>
-    <div class="legend"><span style="background:var(--kept)"></span>used<span style="background:var(--auto)"></span>auto-dropped<span style="background:#4b5563"></span>manual drop<span style="background:#111827;border:1px solid #4b5563"></span>other detector (off)</div>
-    <div class="legend">Click a channel to toggle a manual drop for this file.</div>
+    <div class="legend"><span style="background:var(--kept)"></span>used<span style="background:var(--auto)"></span>auto-dropped<span style="background:#4b5563"></span>manual drop<span style="background:#111827;border:1px solid #4b5563"></span>other detector (off)<span style="background:var(--kept);box-shadow:inset 0 0 0 2px #fbbf24"></span>kept by you</div>
+    <div class="legend">Hover a channel for the reason. Click: used → manual drop → used; auto-dropped → keep anyway → auto.</div>
     <div class="btnrow">
       <button id="dropsAll">Copy drops to all files</button>
       <button id="dropsClear">Clear drops</button>
@@ -143,7 +157,7 @@
     <label class="row">Foil num. <select id="cfg-fnum"></select></label>
     <label class="row">Foil denom. <select id="cfg-fden"></select></label>
     <div class="legend" style="display:flex;justify-content:space-between;gap:6px;align-items:center">
-      <span id="foilNote"></span><button class="small" id="foilReset" title="Use the beamline default for each file">default</button></div>
+      <div id="foilNote" style="flex:1;min-width:0;overflow-wrap:anywhere"></div><button class="small" id="foilReset" style="flex:none" title="Use the beamline default for each file">default</button></div>
     <label class="row">Method <select id="cfg-fmeth">
       <option value="ln">ln(num/denom), dμ/dE</option>
       <option value="legacy">XAS_Worker legacy: log10(num/denom − min)</option>
@@ -172,11 +186,13 @@
 
   <div class="sec">
     <h2>Download processed data</h2>
+    <label class="row" title="Time per point spent moving motors and reading out (not recorded in the file). Used for the Elapsed_s column: time from the scan start (header) to the middle of each point. 1.7 s was measured at BL7-3 from the time between scan starts.">Overhead s/pt
+      <input type="number" id="cfg-ovh" min="0" step="0.1" value="1.7"></label>
     <div class="btnrow">
       <button id="saveOne">Download current file</button>
       <button id="saveAll">Download selected (0)</button>
     </div>
-    <div class="legend">One <code>&lt;name&gt;_processed.dat</code> per scan, with a header listing channels, detector, calibration and source file. “Download selected” saves every checked file (checkbox in the file list), one by one. Chrome asks where to save each one if “Ask where to save each file” is on (the first time it may also ask to allow multiple downloads).</div>
+    <div class="legend">One <code>&lt;name&gt;_processed.dat</code> per scan, with a header listing channels, detector, calibration, source file and scan start time. Columns: energies, SumRatio, I0, the raw foil channel(s) and the reference ln(num/denom), count time, cumulative count time and elapsed time. “Download selected” saves every checked file (checkbox in the file list), one by one. Chrome asks where to save each one if “Ask where to save each file” is on (the first time it may also ask to allow multiple downloads).</div>
   </div>
 </aside>
 
@@ -213,6 +229,7 @@
             <label class="chk"><input type="checkbox" id="rawDivI0"> divide by I0</label>
             <label class="chk"><input type="checkbox" id="rawLog"> log y-axis</label>
             <label class="chk"><input type="checkbox" id="rawCal"> calibrated energy</label>
+            <label class="chk" title="x-axis = time from the scan start to the middle of each point (count times + overhead per point, see Download section)"><input type="checkbox" id="rawTime"> x = elapsed time</label>
           </div>
         </div>
         <div id="plotRaw" class="plot"></div>
@@ -222,20 +239,30 @@
     <section class="tab" id="tab-chan">
       <div class="card" id="detCard"><h3>Detectors</h3><div id="detTable"></div></div>
       <div class="card">
-        <h3>Mean fluorescence / I0 per channel <span style="color:var(--muted);font-weight:400">(click a bar to toggle a drop)</span></h3>
-        <div id="plotBars" class="plot short"></div>
-      </div>
-      <div class="card">
+        <h3>Each channel / I0 vs energy</h3>
         <div class="toolbar">
-          <label class="chk"><input type="checkbox" id="chNorm" checked> normalize each channel (divide by mean)</label>
-          <label class="chk"><input type="checkbox" id="chShowDropped"> show dropped channels</label>
+          <label title="How each channel (counts / I0) is scaled so that channels can be compared">Normalize
+            <select id="chNorm">
+              <option value="edge">edge step (pre-edge 0, post-edge 1)</option>
+              <option value="mean">÷ mean over the scan</option>
+              <option value="none">none (counts / I0)</option>
+            </select></label>
+          <label class="chk"><input type="checkbox" id="chShowDropped" checked> show dropped channels</label>
+          <label class="chk" title="Channels of a detector that is not used (e.g. SCA2 when the signal is on SCA1)"><input type="checkbox" id="chShowOff"> show other detector</label>
         </div>
         <div id="plotChan" class="plot"></div>
+        <div id="chanNote" style="color:var(--muted);font-size:12px"></div>
+      </div>
+      <div class="card"><h3>Channel quality <span style="color:var(--muted);font-weight:400">(each channel compared with the clean channels of its detector; red = above the limit)</span></h3>
+        <div id="qualTable"></div></div>
+      <div class="card">
+        <h3>Mean fluorescence / I0 per channel <span style="color:var(--muted);font-weight:400">(click a bar to toggle a drop)</span></h3>
+        <div id="plotBars" class="plot short"></div>
       </div>
     </section>
 
     <section class="tab" id="tab-sum">
-      <div class="card"><h3>Summed fluorescence / I0 (calibrated energy)</h3>
+      <div class="card"><h3>Summed fluorescence / I0 × mean I0 (calibrated energy)</h3>
         <div id="sumInfo"></div><div id="plotSum" class="plot"></div></div>
       <div class="card"><h3>Transmission ln(I0/I1)</h3><div id="plotTrans" class="plot short"></div></div>
       <div class="card"><h3>Statistics (as in XAS_Worker output_log.json)</h3><div class="stat-grid" id="statGrid"></div></div>
@@ -249,7 +276,7 @@
 
     <section class="tab" id="tab-merge">
       <div id="mergeInfo"><div class="msg warn">Check two or more files in the left menu and click “Merge checked”.</div></div>
-      <div class="card"><h3>Individual scans (Σ/I0) and merged result (channels added), calibrated energy</h3>
+      <div class="card"><h3>Individual scans (Σ/I0 · ⟨I0⟩) and merged result (channels added), calibrated energy</h3>
         <div id="plotMerge" class="plot"></div></div>
       <div class="card"><h3>Difference of each scan from the merged result</h3><div id="plotMergeDiff" class="plot short"></div></div>
       <div class="card"><h3>Scans merged</h3><div id="mergeTable"></div></div>
@@ -259,7 +286,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const state = { scans: [], current: null, cache: {}, drops: {}, result: null, tab: 'info', checked: new Set(), merged: null };
+const state = { scans: [], current: null, cache: {}, drops: {}, keeps: {}, result: null, tab: 'info', checked: new Set(), merged: null };
 const PLOT_CFG = { responsive: true, displaylogo: false };
 const LAYOUT = { margin: { l: 60, r: 20, t: 10, b: 45 }, xaxis: { title: 'Energy (eV)' },
                  legend: { font: { size: 10 } }, hovermode: 'x unified' };
@@ -277,7 +304,7 @@ $('fileInput').onchange = async e => {
   e.target.value = '';
   const r = await fetch('/api/open', { method: 'POST', body: fd }).then(r => r.json());
   r.errors.forEach(x => msg(`${x.filename}: ${x.error}`));
-  r.scans.forEach(s => { state.scans.push(s); state.drops[s.id] = new Set(); });
+  r.scans.forEach(s => { state.scans.push(s); state.drops[s.id] = new Set(); state.keeps[s.id] = new Set(); });
   state.scans.sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true }));
   renderFiles();
   if (r.scans.length) {
@@ -289,7 +316,7 @@ $('fileInput').onchange = async e => {
 };
 $('closeAll').onclick = async () => {
   for (const s of state.scans) fetch('/api/scan/' + s.id, { method: 'DELETE' });
-  Object.assign(state, { scans: [], current: null, cache: {}, drops: {}, result: null, merged: null });
+  Object.assign(state, { scans: [], current: null, cache: {}, drops: {}, keeps: {}, result: null, merged: null });
   state.checked.clear();
   renderFiles(); showWelcome(true);
 };
@@ -378,17 +405,20 @@ function config(id = state.current) {
   const scan = state.scans.find(s => s.id === id);
   return {
     energy: resolveRole(scan, 'energy'), i0: resolveRole(scan, 'i0'), i1: resolveRole(scan, 'i1') || null,
-    fluor_channels: fluorChannels(scan), manual_drops: [...state.drops[id]],
+    fluor_channels: fluorChannels(scan), manual_drops: [...state.drops[id]], force_keep: [...state.keeps[id]],
     auto_drop_threshold: +$('cfg-thr').value, calibrate: $('cfg-cal').checked,
+    quality_k: +$('cfg-qk').value, local_limit: +$('cfg-ql').value, quality_tests: [...document.querySelectorAll('.cfg-qt:checked')].map(x => x.value),
     element: $('cfg-el').value, foil_num: resolveRole(scan, 'foil_num') || null, foil_den: resolveRole(scan, 'foil_den') || null,
     foil_method: $('cfg-fmeth').value,
     detector: $('cfg-det').value,
+    overhead_per_point: +$('cfg-ovh').value,
     smooth_fwhm: +$('cfg-smooth').value, spline_step: +$('cfg-spline').value, cal_window: +$('cfg-win').value,
   };
 }
 
-['cfg-energy', 'cfg-i0', 'cfg-i1', 'cfg-thr', 'cfg-cal', 'cfg-el', 'cfg-fnum', 'cfg-fden', 'cfg-fmeth', 'cfg-regex', 'cfg-smooth', 'cfg-spline', 'cfg-win', 'cfg-det']
+['cfg-energy', 'cfg-i0', 'cfg-i1', 'cfg-thr', 'cfg-qk', 'cfg-ql', 'cfg-cal', 'cfg-el', 'cfg-fnum', 'cfg-fden', 'cfg-fmeth', 'cfg-regex', 'cfg-smooth', 'cfg-spline', 'cfg-win', 'cfg-det', 'cfg-ovh']
   .forEach(id => $(id).addEventListener('change', run));
+document.querySelectorAll('.cfg-qt').forEach(x => x.addEventListener('change', run));
 $('cfg-fmeth').addEventListener('change', () => {
   const leg = $('cfg-fmeth').value === 'legacy';
   ['cfg-smooth', 'cfg-spline'].forEach(id => $(id).disabled = leg);
@@ -397,14 +427,24 @@ $('cfg-fmeth').addEventListener('change', () => {
 $('cfg-fluorpat').onchange = () => { $('customRow').hidden = $('cfg-fluorpat').value !== 'custom'; run(); };
 $('dropsAll').onclick = () => {
   const d = state.drops[state.current]; if (!d) return;
-  for (const s of state.scans) state.drops[s.id] = new Set(d);
-  msg(`Copied ${d.size} manual drop(s) to all ${state.scans.length} files.`, 'ok');
+  const k = state.keeps[state.current];
+  for (const s of state.scans) { state.drops[s.id] = new Set(d); state.keeps[s.id] = new Set(k); }
+  msg(`Copied ${d.size} manual drop(s) and ${k.size} manual keep(s) to all ${state.scans.length} files.`, 'ok');
 };
-$('dropsClear').onclick = () => { if (state.current) { state.drops[state.current].clear(); run(); } };
+$('dropsClear').onclick = () => { if (state.current) { state.drops[state.current].clear(); state.keeps[state.current].clear(); run(); } };
 
+// click on a channel: used <-> manual drop; auto-dropped <-> kept anyway (forced)
 function toggleDrop(ch) {
-  const d = state.drops[state.current]; d.has(ch) ? d.delete(ch) : d.add(ch); run();
+  const info = state.result?.channels?.[ch]; if (!info || info.status === 'off') return;
+  const d = state.drops[state.current], k = state.keeps[state.current];
+  if (info.status === 'auto') k.add(ch);
+  else if (info.forced) k.delete(ch);
+  else if (d.has(ch)) d.delete(ch);
+  else d.add(ch);
+  run();
 }
+const REASON = { zeros: 'zero counts', dead: 'dead (no edge)', distortion: 'local distortion', noise: 'excess noise', spikes: 'spikes' };
+const reasonText = info => (info.reasons || []).map(r => REASON[r] || r).join(', ');
 
 /* ---------------- saving ---------------- */
 async function download(url, body) {
@@ -457,12 +497,13 @@ function plotMerged() {
   if (!m) return;
   const shifts = m.scans.map(s => s.shift);
   $('mergeInfo').innerHTML = `<div class="msg ok"><b>${m.n_scans}</b> scans merged by adding channels (Σ counts ÷ Σ I0, no scaling; ${m.mode === 'first' ? 'interpolated to the energy grid of the first scan' : 'point-by-point'}), at ${m.at} with the settings at that time. ` +
-    `Calibration shifts ${Math.min(...shifts).toFixed(3)} … ${Math.max(...shifts).toFixed(3)} eV. Re-click “Merge checked” after changing settings.</div>` +
+    `Calibration shifts ${Math.min(...shifts).toFixed(3)} … ${Math.max(...shifts).toFixed(3)} eV. Re-click “Merge checked” after changing settings.` +
+    (m.n_trimmed ? ` ${m.n_trimmed} point(s) left out because not every scan covers them (${m.trimmed_energies.map(x => x.toFixed(2)).join(', ')} eV).` : '') + '</div>' +
     (m.scans.some(s => !s.calibrated) ? '<div class="msg warn">Some scans are not calibrated (see table).</div>' : '');
   const E = m.energy, tr = [];
   m.scans.forEach(s => tr.push({ x: E, y: s.sumratio, mode: 'lines', name: s.file, line: { width: 1 }, opacity: 0.7 }));
   tr.push({ x: E, y: m.sumratio, mode: 'lines', name: 'MERGED', line: { width: 2.5, color: '#111827' } });
-  Plotly.react('plotMerge', tr, { ...LAYOUT, hovermode: 'closest', yaxis: { title: 'Σ counts / I0' } }, PLOT_CFG);
+  Plotly.react('plotMerge', tr, { ...LAYOUT, hovermode: 'closest', yaxis: { title: 'Σ counts / Σ I0 · ⟨I0⟩' } }, PLOT_CFG);
   Plotly.react('plotMergeDiff', m.scans.map(s => ({ x: E, mode: 'lines', name: s.file, line: { width: 1 },
     y: s.sumratio.map((v, i) => v == null || m.sumratio[i] == null ? null : v - m.sumratio[i]) })),
     { ...LAYOUT, hovermode: 'closest', yaxis: { title: 'scan − average' } }, PLOT_CFG);
@@ -545,7 +586,7 @@ function fillRawY(d) {
   (want.length ? want : [d.roles.i0, d.roles.i1, d.roles.foil_den].filter(Boolean))
     .forEach(c => { const o = [...sel.options].find(o => o.value === c); if (o) o.selected = true; });
 }
-['rawY', 'rawDivI0', 'rawLog', 'rawCal', 'chNorm', 'chShowDropped'].forEach(id => $(id).addEventListener('change', renderTab));
+['rawY', 'rawDivI0', 'rawLog', 'rawCal', 'rawTime', 'chNorm', 'chShowDropped', 'chShowOff'].forEach(id => $(id).addEventListener('change', renderTab));
 
 function renderGrid(res) {
   const g = $('chgrid'); g.innerHTML = '';
@@ -556,6 +597,7 @@ function renderGrid(res) {
     $('cfg-det').innerHTML = '<option>from file</option>'; $('cfg-det').disabled = true;
     $('detTable').innerHTML = `<div style="color:var(--muted)">Detector and channel selection were done when this file was processed: ` +
       `${P.detector}${res.kept.length ? ', channels ' + res.kept.join(' ') : ''}.</div>`;
+    $('qualTable').innerHTML = '<div style="color:var(--muted)">Channel quality was checked when this file was processed (see its header).</div>';
     return;
   }
   const chs = Object.entries(res.channels);
@@ -570,8 +612,11 @@ function renderGrid(res) {
       g.appendChild(h); lastDet = info.detector;
     }
     const d = document.createElement('div');
-    d.className = info.status; d.textContent = c;
-    d.title = `${c}: ${info.zeros} zero points` + ({ auto: ' (auto-dropped)', off: ' (detector not selected)', manual: ' (manual drop)' }[info.status] || '');
+    d.className = info.status + (info.forced ? ' forced' : ''); d.textContent = c;
+    const q = info.quality, f = v => v == null ? '—' : (+v.toPrecision(3)).toString();
+    d.title = `${c}: ` + ({ auto: `auto-dropped: ${reasonText(info)}`, off: 'detector not selected', manual: 'manual drop' }[info.status]
+      || (info.forced ? `kept by you despite: ${reasonText(info)}` : 'used')) +
+      `\nzero points ${info.zeros}` + (q ? `\nedge jump ${f(100 * q.jump_rel)} % of median\ndistortion ${q.distortion == null ? '—' : `${f(q.distortion)} σ (${f(100 * q.distortion_dev)} % of jump at ${Math.round(q.distortion_E)} eV)`}\nnoise ${f(q.noise)} × counting statistics\nspikes ${q.spikes ?? '—'}` : '');
     if (info.status !== 'off') d.onclick = () => toggleDrop(c);
     g.appendChild(d);
   }
@@ -583,6 +628,29 @@ function renderGrid(res) {
   sel.value = [...sel.options].some(o => o.value === cur) ? cur : 'auto';
   sel.disabled = !multi;
   renderDetTable(res);
+  renderQualTable(res);
+}
+
+function renderQualTable(res) {
+  const f = (v, n = 3) => v == null ? '—' : (+v.toPrecision(n)).toString();
+  const chs = Object.values(res.channels).filter(i => i.status !== 'off');
+  if (!chs.length) { $('qualTable').innerHTML = '<div style="color:var(--muted)">No channels in use.</div>'; return; }
+  const L = res.quality_limits || {};
+  const over = (i, key, v) => { const l = L[i.detector]?.[key]; return v != null && l != null && v > l ? 'over' : ''; };
+  const tests = res.quality_tests || [];
+  const lim = Object.entries(L).map(([g, l]) => `${g}: distortion ≤ ${f(l.distortion)} σ, noise ≤ ${f(l.noise)}, spikes ≤ ${f(l.spikes, 2)}`).join(' · ');
+  $('qualTable').innerHTML = (res.quality_note ? `<div class="msg warn">${res.quality_note}</div>` : '') +
+    `<table class="det"><tr><th>Channel</th><th>Status</th><th>Reason</th><th>Edge jump<br>(% of median)</th><th>Distortion<br>(σ)</th><th>largest dev.<br>(% of jump, at eV)</th>` +
+    `<th>Noise<br>(× Poisson)</th><th>Spikes<br>(&gt; 6σ)</th><th>Zero<br>points</th></tr>` +
+    chs.map(i => { const q = i.quality || {};
+      return `<tr class="st-${i.status}"><td>${i.name}</td><td>${i.forced ? 'kept by you' : { kept: 'used', auto: 'auto-dropped', manual: 'manual drop' }[i.status]}</td>` +
+        `<td>${reasonText(i) || '—'}</td><td class="${q.jump_rel != null && q.jump_rel < 0.3 ? 'over' : ''}">${q.jump_rel == null ? '—' : f(100 * q.jump_rel)}</td>` +
+        `<td class="${over(i, 'distortion', q.distortion)}">${f(q.distortion)}</td><td>${q.distortion_dev == null ? '—' : `${(100 * q.distortion_dev).toFixed(1)} % @ ${Math.round(q.distortion_E)}`}</td>`+
+        `<td class="${over(i, 'noise', q.noise)}">${f(q.noise)}</td>` +
+        `<td class="${over(i, 'spikes', q.spikes)}">${q.spikes ?? '—'}</td><td class="${i.reasons?.includes('zeros') ? 'over' : ''}">${i.zeros}</td></tr>`; }).join('') +
+    `</table><div style="color:var(--muted);font-size:12px">${res.quality_k > 0 || res.local_limit > 0 ? `Tests used: dead, ${tests.join(', ') || 'none'}. Limits (distortion: fixed; noise / spikes: median + ${res.quality_k} × MAD of the channels): ${lim}.` : 'Quality check off.'} ` +
+    `Distortion = largest local (5-point) deviation of the channel's normalized spectrum from a reference made of the clean channels, in units of the channel's own noise — catches sudden drops such as dead-time losses from diffraction; ` +
+    `noise = robust point-to-point scatter divided by the counting-statistics expectation (1 = ideal). Click a channel in the left menu to override.</div>`;
 }
 
 function renderDetTable(res) {
@@ -612,13 +680,15 @@ function renderTab() {
 const COLOR = { kept: null, auto: '#dc2626', manual: '#9ca3af', off: '#d1d5db' };
 
 function plotRaw(res, d) {
-  const x = $('rawCal').checked ? res.energy : res.energy_raw;
+  const useT = $('rawTime').checked && res.elapsed;
+  const x = useT ? res.elapsed : $('rawCal').checked ? res.energy : res.energy_raw;
   const i0 = d.data[$('cfg-i0').value];
   const traces = [...$('rawY').selectedOptions].map(o => ({
     x, name: o.value, mode: 'lines',
     y: $('rawDivI0').checked ? d.data[o.value].map((v, k) => v / i0[k]) : d.data[o.value],
   }));
-  Plotly.react('plotRaw', traces, { ...LAYOUT, yaxis: { type: $('rawLog').checked ? 'log' : 'linear' } }, PLOT_CFG);
+  Plotly.react('plotRaw', traces, { ...LAYOUT, xaxis: { title: useT ? `Time since scan start (s), start ${d.meta.date || ''}` : 'Energy (eV)' },
+    yaxis: { type: $('rawLog').checked ? 'log' : 'linear' } }, PLOT_CFG);
 }
 
 function mean(a) { const f = a.filter(v => v != null); return f.reduce((s, v) => s + v, 0) / (f.length || 1); }
@@ -631,24 +701,45 @@ function plotChan(res) {
     customdata: chs.map(([c]) => c), hovertemplate: '%{x}: %{y:.4g}<extra></extra>',
   }], { margin: { l: 60, r: 10, t: 10, b: 50 }, yaxis: { title: 'mean ratio' } }, PLOT_CFG);
   $('plotBars').removeAllListeners?.('plotly_click');
-  $('plotBars').on('plotly_click', ev => { const c = ev.points[0].customdata; if (res.channels[c].status !== 'off') toggleDrop(c); });
+  $('plotBars').on('plotly_click', ev => toggleDrop(ev.points[0].customdata));
 
-  const norm = $('chNorm').checked, showD = $('chShowDropped').checked;
-  const traces = chs.filter(([, i]) => showD || i.status === 'kept').map(([, i]) => {
-    const m = norm ? mean(i.ratio) : 1;
-    return { x: res.energy, y: i.ratio.map(v => v == null ? null : v / m), name: i.name, mode: 'lines',
-             line: { width: 1, dash: i.status === 'kept' ? 'solid' : 'dot', color: COLOR[i.status] || undefined } };
-  });
-  Plotly.react('plotChan', traces, { ...LAYOUT, hovermode: 'closest',
-    yaxis: { title: norm ? 'ratio / mean' : 'channel / I0' } }, PLOT_CFG);
+  const mode = $('chNorm').value, showD = $('chShowDropped').checked, showOff = $('chShowOff').checked;
+  // edge-step normalization: (ratio - pre-edge mean) / (post-edge mean - pre-edge mean), as in the quality check
+  const E0 = parseFloat(($('cfg-el').selectedOptions[0]?.textContent.match(/\(([\d.]+)/) || [])[1]);
+  const E = res.energy, inR = (lo, hi) => E.map((x, k) => x > E0 + lo && x < E0 + hi ? k : -1).filter(k => k >= 0);
+  const preI = inR(-150, -20), postI = inR(50, 200);
+  const edgeOK = mode === 'edge' && isFinite(E0) && preI.length >= 3 && postI.length >= 3;
+  const avg = (y, idx) => mean(idx.map(k => y[k]));
+  const skipped = [];
+  const shown = chs.filter(([, i]) => i.status === 'kept' || (i.status === 'off' ? showOff : showD));
+  const traces = [];
+  // dropped / off first so the used channels are drawn on top
+  for (const [, i] of [...shown.filter(([, i]) => i.status !== 'kept'), ...shown.filter(([, i]) => i.status === 'kept')]) {
+    let a = 0, b = 1;
+    if (mode === 'mean') b = mean(i.ratio);
+    else if (mode === 'edge' && edgeOK) {
+      a = avg(i.ratio, preI); b = avg(i.ratio, postI) - a;
+      if (!(b > 0) || (i.quality && i.quality.jump_rel < 0.3) || (i.status === 'off' && !i.quality)) { skipped.push(i.name); continue; }
+    }
+    const kept = i.status === 'kept';
+    traces.push({ x: E, y: i.ratio.map(v => v == null ? null : (v - a) / b), name: i.name + (kept ? '' : ` (${i.status === 'auto' ? 'auto' : i.status === 'manual' ? 'manual' : 'off'})`),
+      mode: 'lines', opacity: kept ? 1 : 0.6,
+      line: { width: kept ? 1 : 0.8, dash: kept ? 'solid' : 'dot', color: COLOR[i.status] || undefined } });
+  }
+  const ytitle = { edge: 'edge-step normalized', mean: 'ratio / mean', none: 'channel / I0' }[edgeOK || mode !== 'edge' ? mode : 'none'];
+  Plotly.react('plotChan', traces, { ...LAYOUT, hovermode: 'closest', yaxis: { title: ytitle } }, PLOT_CFG);
+  $('chanNote').innerHTML = (mode === 'edge' && !edgeOK ? `Edge-step normalization needs data at E₀−150…−20 and E₀+50…+200 eV (E₀ = foil element ${$('cfg-el').value}); shown without normalization. ` : '') +
+    (skipped.length ? `Not shown (no edge step to normalize by): ${skipped.join(', ')}. ` : '') +
+    `ratio = channel counts / I0. Solid = used, dotted red = auto-dropped, dotted grey = manual drop.`;
 }
 
 function plotSum(res) {
   const sh = res.calibration?.ok ? `Energy shifted by ${res.shift.toFixed(3)} eV. ` : 'Not calibrated. ';
   $('sumInfo').innerHTML = `<div class="msg ok">${sh}${res.kept.length} channels summed (detector: ${res.detectors.filter(d => d.selected).map(d => d.name).join(' + ') || '—'}). Dropped: ` +
-    `${[...res.auto_dropped.map(c => c + ' (auto)'), ...res.manual_dropped].join(', ') || 'none'}</div>`;
+    `${[...res.auto_dropped.map(c => `${c} (auto: ${reasonText(res.channels[c])})`), ...res.manual_dropped.map(c => c + ' (manual)')].join(', ') || 'none'}` +
+    (res.forced_kept?.length ? `. Kept by you despite the automatic check: ${res.forced_kept.join(', ')}` : '') + '</div>';
   Plotly.react('plotSum', [{ x: res.energy, y: res.sumratio, mode: 'lines', name: 'SumRatio' }],
-    { ...LAYOUT, yaxis: { title: 'Σ FF / I0' } }, PLOT_CFG);
+    { ...LAYOUT, yaxis: { title: 'Σ FF / I0 · ⟨I0⟩' } }, PLOT_CFG);
   if (res.transmission)
     Plotly.react('plotTrans', [{ x: res.energy, y: res.transmission, mode: 'lines', name: 'ln(I0/I1)' }],
       { ...LAYOUT, yaxis: { title: 'ln(I0/I1)' } }, PLOT_CFG);
